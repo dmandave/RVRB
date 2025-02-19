@@ -1,0 +1,12 @@
+# Ignore everything
+*
+
+# Except for ws-client.js
+!ws-client.js
+!.gitignore
+!README.md
+
+# Always ignore these
+node_modules/
+.env
+package-lock.json

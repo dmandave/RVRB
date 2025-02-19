@@ -49,12 +49,55 @@ def keepAwake(data):
 
 def ready(data):
     global channelId
-    if data.params["channelId"]:
-        channelId = data.params["channelId"]
-    join() # Server sends ready when it's ready to receive commands
+    if data.get("params", {}).get("channelId"):
+        channelId = data["params"]["channelId"]
+    print(f"\n=== CONNECTED TO CHANNEL {channelId} ===\n")
+    join()
+
+    time.sleep(2)
+    print("\n=== ATTEMPTING TO SEND TEST MESSAGE ===\n")
+
+    # New format matching the JavaScript client structure
+    test_msg = {
+        "jsonrpc": "2.0",
+        "method": "sendChannelMessage",  # Not push, but send
+        "params": {
+            "channelId": channelId,
+            "message": {  # Nested message object
+                "type": "chat",
+                "content": "Test message from admin bot",
+                "timestamp": int(time.time() * 1000)
+            }
+        },
+        "id": random.randint(1, 1000)  # Important: Include an ID for the response
+    }
+    print(f"Sending message: {json.dumps(test_msg, indent=2)}")
+    ws.send(json.dumps(test_msg))
 
 def pushChannelMessage(data):
     print("Received chat message", data["params"])
+
+    # Extract the message content
+    message = data["params"].get("message", {}).get("content", "")
+
+    # Check if message starts with ! or ~ for bot commands
+    if message.startswith("!") or message.startswith("~"):
+        command = message[1:]  # Remove the prefix
+
+        # Send a response
+        ws.send(json.dumps({
+            "jsonrpc": "2.0",
+            "method": "sendChannelMessage",
+            "params": {
+                "channelId": channelId,
+                "message": {
+                    "type": "chat",
+                    "content": f"Received command: {command}",
+                    "timestamp": int(time.time() * 1000)
+                }
+            },
+            "id": random.randint(1, 1000)
+        }))
 
 def pushNotification(data):
     print("Received notification", data["params"]) # Notification from the server
@@ -107,16 +150,17 @@ eventHandlers = {
 
 def onMessage(ws, message):
     data = json.loads(message)
-    print(f"Received message: {message}")
-    # wait for the ready message before sending anything else
+
+    # Enhanced logging for all messages
+    print(f"\n=== RECEIVED MESSAGE ===\nType: {data.get('method', 'response')}\nContent: {json.dumps(data, indent=2)}\n")
+
     if 'method' in data and data['method'] in eventHandlers:
         eventHandlers[data['method']](data)
     elif 'id' in data and data['id'] == joinId:
-        # was join a success?
         if 'error' in data:
             print(f"Error joining channel: {data['error']['message']}")
         else:
-            print(f"Joined channel {channelId}")
+            print(f"Successfully joined channel {channelId}")
 
 def onPing(ws, message):
     print("Received ping from server")
@@ -129,11 +173,11 @@ def onPong(ws, message):
 def onOpen(ws):
     print("Connected to server")
 
-def onClose(ws):
-    print("Disconnected from server")
-    # reconnect?
+def onClose(ws, close_status_code, close_msg):
+    print(f"\n=== CONNECTION CLOSED ===\nStatus: {close_status_code}\nMessage: {close_msg}\n")
     if reconnect:
-        ws.run_forever()
+        print("Attempting to reconnect...")
+        connect()
 
 def onError(ws, error):
     print(f"WebSocket error: {error}")

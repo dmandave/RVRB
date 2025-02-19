@@ -1,167 +1,144 @@
+require('dotenv').config()
 const WebSocket = require('ws')
 
-// const url = `wss://app.rvrb.one/ws-bot?apiKey=${process.env.apikey}`
-const url = `wss://app.rvrb.one/ws-bot?apiKey=${process.env.apikey}`
+class RvrbBot {
+    constructor() {
+        this.apiKey = process.env.RVRB_API_KEY
+        this.channelId = process.env.RVRB_CHANNEL_ID
+        this.botName = process.env.RVRB_BOT_NAME
+        this.botId = null
+        this.ws = null
+        this.users = {}
+        this.votes = null
+    }
 
-let channelId = null
-const password = process.env.password || null
+    stayAwake(data) {
+        const message = {
+            jsonrpc: '2.0',
+            method: 'stayAwake',
+            params: {
+                date: Date.now().toString()
+            }
+        }
+        this.ws.send(JSON.stringify(message))
+    }
 
-let ws = null
-let latency = 0
-const reconnect = true
-let joinId = null
+    sendMessage(message) {
+        const messageData = {
+            jsonrpc: '2.0',
+            method: 'pushMessage',
+            params: {
+                payload: message
+            }
+        }
+        console.log('Sending message:', JSON.stringify(messageData, null, 2))
+        this.ws.send(JSON.stringify(messageData))
+    }
 
-// attempt to join my channel
-const join = () => {
-  joinId = Math.round(Math.random() * 100) // provide an id to get a response
-  const joinRequest = {
-    method: 'join',
-    params: {
-      channelId
-    },
-    id: joinId
-  }
-  if (password) {
-    joinRequest.params.password = password
-  }
-  ws.send(JSON.stringify(joinRequest))
+    // Add vote tracking like doopBot
+    updateVotes(data) {
+        this.votes = data.params
+        console.log('Current votes:', this.votes)
+    }
+
+    // Send a vote (up=1, down=0)
+    sendVote(vote = 0) {
+        const voteMessage = {
+            jsonrpc: '2.0',
+            method: 'updateChannelMeter',  // This is the method doopBot uses for votes
+            params: {
+                vote: vote,  // 0 for down, 1 for up
+                channelId: this.channelId
+            }
+        }
+        console.log('Sending vote:', JSON.stringify(voteMessage, null, 2))
+        this.ws.send(JSON.stringify(voteMessage))
+    }
+
+    sendBoofstar() {
+        if (!this.botId) {
+            console.error('No bot ID available for voting!')
+            return
+        }
+
+        const voteMessage = {
+            jsonrpc: '2.0',
+            method: 'updateChannelMeter',
+            params: {
+                userId: this.botId,
+                voting: {
+                    [this.botId]: {
+                        dope: 0,
+                        nope: 1,
+                        star: 1,
+                        boofStar: 1,
+                        votedCount: 1,
+                        chat: 0
+                    }
+                }
+            }
+        }
+        console.log('Sending boofstar for current track')
+        this.ws.send(JSON.stringify(voteMessage))
+    }
+
+    onMessage(data) {
+        try {
+            const parsed = JSON.parse(data)
+
+            switch (parsed.method) {
+                case 'ready':
+                    this.botId = parsed.params.userId || parsed.params._id
+                    console.log('Connected as bot:', this.botName)
+                    break
+
+                case 'updateChannelUsers':
+                    this.users = parsed.params.users.reduce((acc, user) => {
+                        acc[user._id] = user
+                        return acc
+                    }, {})
+                    if (!this.botId) {
+                        const botUser = Object.values(this.users).find(u => u.userName === this.botName)
+                        if (botUser) this.botId = botUser._id
+                    }
+                    break
+
+                case 'playChannelTrack':
+                    const track = parsed.params.track
+                    console.log(`Now playing: ${track.name} by ${track.artists[0].name}`)
+                    setTimeout(() => {
+                        this.sendBoofstar()
+                        this.sendMessage(`Boofstarred: ${track.name} by ${track.artists[0].name}`)
+                    }, 2000)
+                    break
+            }
+        } catch (e) {
+            console.error('Error handling message:', e)
+        }
+    }
+
+    run() {
+        const url = `wss://app.rvrb.one/ws-bot?apiKey=${this.apiKey}`
+        this.ws = new WebSocket(url)
+
+        this.ws.on('open', () => {
+            console.log('Connected to RVRB')
+            const joinData = {
+                method: 'join',
+                params: {
+                    channelId: this.channelId
+                },
+                id: 1
+            }
+            this.ws.send(JSON.stringify(joinData))
+        })
+
+        this.ws.on('message', (data) => this.onMessage(data))
+        this.ws.on('error', (error) => console.error('WebSocket error:', error))
+        this.ws.on('close', () => console.log('Disconnected from RVRB'))
+    }
 }
 
-// event handlers for the WebSocket connection
-// these are called when the server sends a message
-// with a method that matches the key
-const eventHandlers = {
-  keepAwake: (data) => {
-    // keep awake is like a ping but also used to measure latency
-    latency = data.params.latency
-    console.log(`Latency: ${latency}ms`)
-    // send a stayAwake message back to the server
-    // if the server doesn't receive a stayAwake message 3 times in a row
-    // the server will close the connection
-    ws.send(JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'stayAwake',
-      params: {
-        date: Date.now()
-      }
-    }))
-  },
-  ready: (data) => {
-    if ('channelId' in data.params) {
-      channelId = data.params.channelId
-      join() // server sends ready when it's ready to receive commands
-    }
-  },
-  pushChannelMessage: (data) => {
-    // received a chat message from the channel
-    // this is where you would handle commands
-    console.log(`Received message from channel: ${data.params.message}`)
-  },
-  pushNotification: (data) => {
-    // received a notification from the channel
-    // this is where you would handle notifications
-    console.log(`Received notification from channel: ${data.params.message}`)
-  },
-  updateChannel: (data) => {
-    // received an update to the channel
-    // this is where you would handle updates
-    console.log(`Received update from channel: ${data.params.message}`)
-  },
-  updateChannelUsers: (data) => {
-    // received an update to the channel users (join, leave, etc)
-    // this is where you would handle updates
-    console.log(`Received update from channel users: ${data.params.message}`)
-  },
-  updateChannelUser: (data) => {
-    // received an update to a channel user (change display name, etc)
-    // this is where you would handle updates
-    console.log(`Received update from channel user: ${data.params.message}`)
-  },
-  updateChannelDjs: (data) => {
-    // received an update to the channel djs (add, remove, etc)
-    // this is where you would handle updates
-    console.log(`Received update from channel djs: ${data.params.message}`)
-  },
-  updateChannelMeter: (data) => {
-    // received a voting update
-    // this is where you would handle updates
-    console.log(`Received update from channel meter: ${data.params.message}`)
-  },
-  updateChannelUserStatus: (data) => {
-    // received an update to a channel user's status (mute, block, afk, typing)
-    // this is where you would handle updates
-    console.log(`Received update from channel user status: ${data.params.message}`)
-  },
-  leaveChannel: (data) => {
-    // received a leave channel message
-    // this command instructs the bot to leave the channel, nicely
-    // this is where you would handle updates
-    console.log(`Received leave channel message: ${data.params.message}`)
-  },
-  playChannelTrack: (data) => {
-    // received a play track message
-    // this is sent when a new track is playing
-    console.log(`Received play track message: ${data.params.message}`)
-  },
-  pauseChannelTrack: (data) => {
-    // received a pause track message
-    // this is sent when a track is paused
-    console.log(`Received pause track message: ${data.params.message}`)
-  }
-}
-
-const connect = () => {
-  // attempt to connect to the WebSocket server
-  ws = new WebSocket(url)
-
-  ws.on('open', () => {
-    console.log('Connected to server')
-  })
-
-  ws.on('close', () => {
-    console.log('Disconnected from server')
-    // reconnect?
-    if (reconnect) {
-      setTimeout(() => {
-        connect()
-      }, 1000)
-    }
-  })
-
-  ws.on('error', (error) => {
-    console.error(`WebSocket error: ${error}`)
-  })
-
-  ws.on('message', (data) => {
-    console.log(`Received message: ${data}`)
-    try {
-      data = JSON.parse(data)
-    } catch (e) {
-      console.error(`Error parsing JSON: ${e}`)
-      return
-    }
-    // wait for the ready message before sending anything else
-    if (data.method in eventHandlers) {
-      eventHandlers[data.method](data)
-    } else if (data.id === joinId) {
-      // was join a success?
-      if (data.error) {
-        console.error(`Error joining channel: ${data.error.message}`)
-      } else {
-        console.log(`Joined channel ${channelId}`)
-      }
-    }
-  })
-
-  ws.on('ping', () => {
-    console.log('Received ping from server')
-    ws.pong()
-  })
-
-  ws.on('pong', () => {
-    console.log('Received pong from server')
-    ws.ping()
-  })
-}
-
-connect()
+// Run the bot
+const bot = new RvrbBot()
+bot.run()
