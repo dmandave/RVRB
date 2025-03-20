@@ -3,13 +3,23 @@ import os
 import json
 import random
 import time
+from dotenv import load_dotenv
 
-# Set your API key and channel
-os.environ['apikey'] = '606a3d2e0628a7ded8b8e3150d9e7fd2'
-CHANNEL_ID = '635f1ddba557db2254f486b2'
+# Load environment variables
+load_dotenv()
+
+# Get API key from environment variables
+API_KEY = os.getenv('RVRB_API_KEY')  # Use whatever name you have in your .env file
+if not API_KEY:
+    raise ValueError("API_KEY not found in environment variables")
+
+# Get channel ID from environment variables
+CHANNEL_ID = os.getenv('RVRB_CHANNEL_ID')
+if not CHANNEL_ID:
+    raise ValueError("CHANNEL_ID not found in environment variables")
 
 # WebSocket URL with API key
-url = f"wss://app.rvrb.one/ws-bot?apiKey={os.environ.get('apikey')}"
+url = f"wss://app.rvrb.one/ws-bot?apiKey={API_KEY}"
 
 ws = None
 joinId = None
