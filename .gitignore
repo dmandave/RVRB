@@ -1,6 +1,3 @@
-# Ignore everything
-*
-
 # Except for ws-client.js
 !ws-client.js
 !.gitignore

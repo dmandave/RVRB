@@ -1,0 +1,15 @@
+{
+  "name": "rvrb",
+  "version": "1.0.0",
+  "description": "Listen to music with your pals, whether they're next-door or across the world - checkout https://rvrb.one/",
+  "main": "ws-client.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
