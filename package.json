@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "dotenv": "^16.4.7",
     "openai": "^4.90.0",
     "ws": "^8.18.1"

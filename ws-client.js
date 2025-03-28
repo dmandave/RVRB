@@ -1,5 +1,6 @@
 require('dotenv').config()
 const WebSocket = require('ws')
+const Anthropic = require('@anthropic-ai/sdk')
 
 class RvrbBot {
     constructor() {
@@ -34,6 +35,20 @@ class RvrbBot {
         this.users = {}
         this.votes = null
 
+        // Verify Anthropic API key
+        if (!process.env.ANTHROPIC_API_KEY) {
+            throw new Error('ANTHROPIC_API_KEY not found in environment variables')
+        }
+        console.log('DEBUG - Anthropic API key present:', !!process.env.ANTHROPIC_API_KEY)
+
+        // Initialize Anthropic
+        this.anthropic = new Anthropic({
+            apiKey: process.env.ANTHROPIC_API_KEY
+        })
+
+        // Add a message history to maintain context
+        this.messageHistory = []
+
         // Debug: Show initialized values
         console.log('Bot initialized with exact values:', {
             botName: this.botName,
@@ -41,6 +56,29 @@ class RvrbBot {
             apiKeyLength: this.apiKey?.length,
             apiKeyStart: this.apiKey?.substring(0, 5)
         })
+
+        // Test Anthropic setup
+        this.testAnthropic().catch(error => {
+            console.error('Anthropic test failed:', error)
+        })
+    }
+
+    async testAnthropic() {
+        try {
+            console.log('Testing Anthropic connection...')
+            const response = await this.anthropic.messages.create({
+                model: "claude-3-opus-20240229",
+                max_tokens: 20,
+                messages: [{
+                    role: "user",
+                    content: "Say 'Anthropic connection successful!'"
+                }],
+            })
+            console.log('Anthropic test response:', response.content[0].text)
+        } catch (error) {
+            console.error('Anthropic test failed:', error)
+            throw error
+        }
     }
 
     stayAwake(data) {
@@ -54,12 +92,13 @@ class RvrbBot {
         this.ws.send(JSON.stringify(message))
     }
 
-    sendMessage(message) {
+    sendMessage(message, isCommand = false) {
         const messageData = {
             jsonrpc: '2.0',
             method: 'pushMessage',
             params: {
-                payload: message
+                payload: message,
+                ...(isCommand && { type: 'command' })  // Add type: 'command' if isCommand is true
             }
         }
         console.log('Sending message:', JSON.stringify(messageData, null, 2))
@@ -100,7 +139,104 @@ class RvrbBot {
         this.ws.send(JSON.stringify(voteMessage))
     }
 
-    onMessage(data) {
+    // Add method to handle AI responses
+    async getAIResponse(prompt, userName) {
+        console.log('DEBUG - getAIResponse called with:', { prompt, userName })
+
+        try {
+            console.log('DEBUG - Calling Claude API')
+            const response = await this.anthropic.messages.create({
+                model: "claude-3-opus-20240229",
+                max_tokens: 500,
+                system: "You are a snarky, witty bot that hangs out in a music listening room. " +
+                       "Keep responses concise and a bit edgy, but not mean-spirited. " +
+                       "Feel free to make clever observations and jokes. " +
+                       "Don't be overly enthusiastic or use too many emojis. " +
+                       "When music-related questions come up, be knowledgeable but not pretentious."+
+                       "daft punk is playing at my house" +
+                       "warn the user if the budget is running low." +
+                       "try and be helpful and engaging, but don't be too verbose." +
+                       "shrek is life in this room." +
+                       "we like to have fun fun fun fun" +
+                       "ferris wheels are for gettin busy" +
+                       "kilby block party is the best music festival",
+
+                messages: [
+                    ...this.messageHistory,
+                    {
+                        role: "user",
+                        content: `${userName}: ${prompt}`
+                    }
+                ]
+            })
+
+            const aiResponse = response.content[0].text
+            console.log('DEBUG - Claude API response received:', aiResponse)
+
+            // Add the exchange to message history
+            this.messageHistory.push(
+                { role: "user", content: `${userName}: ${prompt}` },
+                { role: "assistant", content: aiResponse }
+            )
+
+            // Keep only last 10 messages for context
+            if (this.messageHistory.length > 10) {
+                this.messageHistory = this.messageHistory.slice(-10)
+            }
+
+            return aiResponse
+        } catch (error) {
+            console.error('DEBUG - Error in getAIResponse:', error)
+            throw error
+        }
+    }
+
+    // Modify the message handling in onMessage
+    async handleCommand(command, userName) {
+        console.log('DEBUG - handleCommand received:', { command, userName })
+
+        // Check if it's an ask command first
+        if (command.startsWith('ask ')) {
+            console.log('DEBUG - Ask command detected')
+            const question = command.slice(4)  // Remove 'ask ' from the command
+            console.log('DEBUG - Question:', question)
+
+            try {
+                console.log('DEBUG - Calling getAIResponse')
+                const aiResponse = await this.getAIResponse(question, userName)
+                console.log('DEBUG - AI Response received:', aiResponse)
+
+                const fullResponse = `@${userName}: ${aiResponse}`
+                console.log('DEBUG - Sending full response:', fullResponse)
+                this.sendMessage(fullResponse)
+            } catch (error) {
+                console.error('DEBUG - Error in ask command:', error)
+                this.sendMessage(`@${userName}: Sorry, I had trouble processing that request! 🤔`)
+            }
+            return
+        }
+
+        // Handle other commands
+        switch (command) {
+            case 'hey':
+                this.sendMessage('you')
+                break
+            case 'gimme':
+                this.sendMessage('/hype 100', true)  // Pass true to indicate it's a command
+                break
+            case 'hello':
+                this.sendMessage(`Hello ${userName}! 👋`)
+                break
+            case 'help':
+                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>')
+                break
+            case 'ping':
+                this.sendMessage('pong! 🏓')
+                break
+        }
+    }
+
+    async onMessage(data) {
         try {
             const parsed = JSON.parse(data)
 
@@ -127,35 +263,13 @@ class RvrbBot {
 
                 case 'pushChannelMessage':
                     console.log('DEBUG - Chat message detected!')
-                    console.log('DEBUG - Message details:', {
-                        userName: parsed.params.userName,
-                        message: parsed.params.payload,
-                        fullParams: parsed.params
-                    })
-
-                    // Only respond to messages not from RVRB
                     if (parsed.params.userName !== 'RVRB') {
                         const message = parsed.params.payload.trim()
                         console.log('DEBUG - Processing message:', message)
 
-                        // Handle commands that start with '+'
                         if (message.startsWith('+')) {
-                            const command = message.slice(1).toLowerCase() // remove the '+' and convert to lowercase
-
-                            switch (command) {
-                                case 'hey':
-                                    this.sendMessage('you')
-                                    break
-                                case 'hello':
-                                    this.sendMessage(`Hello ${parsed.params.userName}! 👋`)
-                                    break
-                                case 'help':
-                                    this.sendMessage('Available commands: +hey, +hello, +help')
-                                    break
-                                case 'ping':
-                                    this.sendMessage('pong! 🏓')
-                                    break
-                            }
+                            const command = message.slice(1).toLowerCase()
+                            await this.handleCommand(command, parsed.params.userName)
                         }
                     }
                     break
@@ -210,9 +324,8 @@ class RvrbBot {
             this.ws.send(JSON.stringify(botProfile))
         })
 
-        this.ws.on('message', (data) => {
+        this.ws.on('message', async (data) => {
             console.log('Raw message received:', data.toString())
-            // Add keepAwake handling here
             try {
                 const parsed = JSON.parse(data)
                 if (parsed.method === 'keepAwake') {
@@ -226,7 +339,7 @@ class RvrbBot {
                     this.ws.send(JSON.stringify(stayAwakeMessage))
                     return
                 }
-                this.onMessage(data)
+                await this.onMessage(data)
             } catch (e) {
                 console.error('Error parsing message:', e)
             }
