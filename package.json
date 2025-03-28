@@ -12,6 +12,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "dotenv": "^16.4.7",
+    "form-data": "^4.0.2",
+    "node-fetch": "^2.7.0",
     "openai": "^4.90.0",
     "ws": "^8.18.1"
   }

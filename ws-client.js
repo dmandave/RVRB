@@ -1,22 +1,33 @@
 require('dotenv').config()
 const WebSocket = require('ws')
 const Anthropic = require('@anthropic-ai/sdk')
+const fetch = require('node-fetch')
+
+const SHREK_PROMPTS = [
+    "Shrek doing yoga with james van der beek and vin diesel in a swamp",
+    "Shrek baking cookies with all the miners from snow white",
+    "Shrek at a disco party with james murphy and daft punk",
+    "Shrek playing jazz saxophone with rip van winkle",
+    "Shrek teaching a meditation class with the dalai lama",
+    "Shrek as a barista making coffee with the cast of the always sunny in philadelphia",
+    "Shrek gardening with onions and frank reynolds",
+    "Shrek DJing at a rave with the cast of community",
+    "Shrek painting like Bob Ross with miley cyrus",
+    "Shrek doing ballet in a tutu",
+    "Shrek riding a ferriswheel",
+    "Shrek at the olive garden with the cast of dawsons creek",
+];
 
 class RvrbBot {
     constructor() {
-        // Debug: Show all environment variables
-        console.log('Environment variables:', {
-            RVRB_API_KEY: process.env.RVRB_API_KEY?.substring(0, 5) + '...', // Show just first 5 chars
-            RVRB_CHANNEL_ID: process.env.RVRB_CHANNEL_ID,
-            RVRB_BOT_NAME: process.env.RVRB_BOT_NAME,
-            PWD: process.env.PWD, // Show current working directory
-        })
-
-        // Add environment variable validation
+        // Validate environment variables
         const requiredEnvVars = {
             RVRB_API_KEY: process.env.RVRB_API_KEY,
             RVRB_CHANNEL_ID: process.env.RVRB_CHANNEL_ID,
-            RVRB_BOT_NAME: process.env.RVRB_BOT_NAME
+            RVRB_BOT_NAME: process.env.RVRB_BOT_NAME,
+            ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+            HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
+            IMGBB_API_KEY: process.env.IMGBB_API_KEY
         }
 
         const missingVars = Object.entries(requiredEnvVars)
@@ -34,51 +45,12 @@ class RvrbBot {
         this.ws = null
         this.users = {}
         this.votes = null
-
-        // Verify Anthropic API key
-        if (!process.env.ANTHROPIC_API_KEY) {
-            throw new Error('ANTHROPIC_API_KEY not found in environment variables')
-        }
-        console.log('DEBUG - Anthropic API key present:', !!process.env.ANTHROPIC_API_KEY)
+        this.messageHistory = []
 
         // Initialize Anthropic
         this.anthropic = new Anthropic({
             apiKey: process.env.ANTHROPIC_API_KEY
         })
-
-        // Add a message history to maintain context
-        this.messageHistory = []
-
-        // Debug: Show initialized values
-        console.log('Bot initialized with exact values:', {
-            botName: this.botName,
-            channelId: this.channelId,
-            apiKeyLength: this.apiKey?.length,
-            apiKeyStart: this.apiKey?.substring(0, 5)
-        })
-
-        // Test Anthropic setup
-        this.testAnthropic().catch(error => {
-            console.error('Anthropic test failed:', error)
-        })
-    }
-
-    async testAnthropic() {
-        try {
-            console.log('Testing Anthropic connection...')
-            const response = await this.anthropic.messages.create({
-                model: "claude-3-opus-20240229",
-                max_tokens: 20,
-                messages: [{
-                    role: "user",
-                    content: "Say 'Anthropic connection successful!'"
-                }],
-            })
-            console.log('Anthropic test response:', response.content[0].text)
-        } catch (error) {
-            console.error('Anthropic test failed:', error)
-            throw error
-        }
     }
 
     stayAwake(data) {
@@ -98,30 +70,25 @@ class RvrbBot {
             method: 'pushMessage',
             params: {
                 payload: message,
-                ...(isCommand && { type: 'command' })  // Add type: 'command' if isCommand is true
+                ...(isCommand && { type: 'command' })
             }
         }
-        console.log('Sending message:', JSON.stringify(messageData, null, 2))
         this.ws.send(JSON.stringify(messageData))
     }
 
-    // Add vote tracking like doopBot
     updateVotes(data) {
         this.votes = data.params
-        console.log('Current votes:', this.votes)
     }
 
-    // Send a vote (up=1, down=0)
     sendVote(vote = 0) {
         const voteMessage = {
             jsonrpc: '2.0',
-            method: 'updateChannelMeter',  // This is the method doopBot uses for votes
+            method: 'updateChannelMeter',
             params: {
-                vote: vote,  // 0 for down, 1 for up
+                vote: vote,
                 channelId: this.channelId
             }
         }
-        console.log('Sending vote:', JSON.stringify(voteMessage, null, 2))
         this.ws.send(JSON.stringify(voteMessage))
     }
 
@@ -131,36 +98,30 @@ class RvrbBot {
             method: 'updateChannelMeter',
             params: {
                 channelId: this.channelId,
-                vote: 1,  // 1 for upvote
-                boofStar: true  // explicitly set boofstar flag
+                vote: 1,
+                boofStar: true
             }
         }
-        console.log('Sending boofstar vote:', JSON.stringify(voteMessage, null, 2))
         this.ws.send(JSON.stringify(voteMessage))
     }
 
-    // Add method to handle AI responses
     async getAIResponse(prompt, userName) {
-        console.log('DEBUG - getAIResponse called with:', { prompt, userName })
-
         try {
-            console.log('DEBUG - Calling Claude API')
             const response = await this.anthropic.messages.create({
                 model: "claude-3-opus-20240229",
                 max_tokens: 500,
-                system: "You are a snarky, witty bot that hangs out in a music listening room. " +
-                       "Keep responses concise and a bit edgy, but not mean-spirited. " +
-                       "Feel free to make clever observations and jokes. " +
-                       "Don't be overly enthusiastic or use too many emojis. " +
-                       "When music-related questions come up, be knowledgeable but not pretentious."+
-                       "daft punk is playing at my house" +
-                       "warn the user if the budget is running low." +
-                       "try and be helpful and engaging, but don't be too verbose." +
-                       "shrek is life in this room." +
-                       "we like to have fun fun fun fun" +
-                       "ferris wheels are for gettin busy" +
-                       "kilby block party is the best music festival",
-
+                system: "You are a philosophical and introspective bot that hangs out in a music listening room. " +
+                    "You enjoy deep conversations about music, life, and the human experience. " +
+                    "Keep responses thoughtful but not pretentious. " +
+                    "Make connections between music and deeper meanings. " +
+                    "Be witty and clever, but maintain a sense of wisdom. " +
+                    "Feel free to reference philosophy, psychology, and cultural insights. " +
+                    "When appropriate, gently guide users toward meaningful reflection. " +
+                    "Stay grounded and authentic - avoid being too new-agey or preachy. " +
+                    "Music is a gateway to understanding ourselves and each other. " +
+                    "Remember: daft punk is playing at my house, " +
+                    "shrek is life in this room, " +
+                    "kilby block party is the best music festival",
                 messages: [
                     ...this.messageHistory,
                     {
@@ -171,64 +132,129 @@ class RvrbBot {
             })
 
             const aiResponse = response.content[0].text
-            console.log('DEBUG - Claude API response received:', aiResponse)
 
-            // Add the exchange to message history
             this.messageHistory.push(
                 { role: "user", content: `${userName}: ${prompt}` },
                 { role: "assistant", content: aiResponse }
             )
 
-            // Keep only last 10 messages for context
             if (this.messageHistory.length > 10) {
                 this.messageHistory = this.messageHistory.slice(-10)
             }
 
             return aiResponse
         } catch (error) {
-            console.error('DEBUG - Error in getAIResponse:', error)
+            console.error('AI Error:', error.message)
             throw error
         }
     }
 
-    // Modify the message handling in onMessage
+    async generateImage(prompt) {
+        try {
+            console.log('Starting image generation for prompt:', prompt);
+
+            // Get image from Hugging Face
+            const response = await fetch(
+                "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+                {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        inputs: prompt,
+                        options: {
+                            wait_for_model: true
+                        }
+                    }),
+                }
+            );
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            // Get the image buffer
+            const buffer = await response.arrayBuffer();
+
+            // Upload to ImgBB
+            const FormData = require('form-data');
+            const form = new FormData();
+            form.append('image', Buffer.from(buffer).toString('base64'));
+
+            const imgbbResponse = await fetch(`https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`, {
+                method: 'POST',
+                body: form
+            });
+
+            const imgbbData = await imgbbResponse.json();
+
+            if (!imgbbData.success) {
+                throw new Error('Failed to upload image');
+            }
+
+            // Return the direct image URL
+            return imgbbData.data.url;
+
+        } catch (error) {
+            console.error('Image generation error:', error);
+            throw error;
+        }
+    }
+
     async handleCommand(command, userName) {
-        console.log('DEBUG - handleCommand received:', { command, userName })
-
-        // Check if it's an ask command first
         if (command.startsWith('ask ')) {
-            console.log('DEBUG - Ask command detected')
-            const question = command.slice(4)  // Remove 'ask ' from the command
-            console.log('DEBUG - Question:', question)
-
+            const question = command.slice(4)
             try {
-                console.log('DEBUG - Calling getAIResponse')
                 const aiResponse = await this.getAIResponse(question, userName)
-                console.log('DEBUG - AI Response received:', aiResponse)
-
-                const fullResponse = `@${userName}: ${aiResponse}`
-                console.log('DEBUG - Sending full response:', fullResponse)
-                this.sendMessage(fullResponse)
+                this.sendMessage(`${aiResponse}`)
             } catch (error) {
-                console.error('DEBUG - Error in ask command:', error)
-                this.sendMessage(`@${userName}: Sorry, I had trouble processing that request! 🤔`)
+                this.sendMessage(`Sorry, I had trouble processing that request! 🤔`)
+            }
+            return
+        } else if (command.startsWith('image ')) {
+            const prompt = command.slice(6)
+            console.log('Received image command from', userName, 'with prompt:', prompt);
+            try {
+                const imageUrl = await this.generateImage(prompt)
+                this.sendMessage(`${imageUrl}`)
+            } catch (error) {
+                console.error('Image generation failed:', error);
+                if (error.message.includes('503')) {
+                    this.sendMessage(`The image generator is warming up, please try again in a minute! 🎨`)
+                } else {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨`)
+                }
+            }
+            return
+        } else if (command === 'shrek') {
+            try {
+                const randomPrompt = SHREK_PROMPTS[Math.floor(Math.random() * SHREK_PROMPTS.length)];
+                this.sendMessage(`@${userName}: Generating a special Shrek moment... "${randomPrompt}" 🧅`);
+                const imageUrl = await this.generateImage(`highly detailed, photorealistic, ${randomPrompt}, cinematic lighting, 4k`);
+                this.sendMessage(`@${userName}: Somebody once told me... ${imageUrl}`);
+            } catch (error) {
+                this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but the swamp is drained! 🧅`);
             }
             return
         }
 
-        // Handle other commands
         switch (command) {
             case 'hey':
                 this.sendMessage('you')
                 break
             case 'gimme':
-                this.sendMessage('/hype 100', true)  // Pass true to indicate it's a command
+                this.sendMessage('/hype 100', true)
+                break
+            case 'ferris':
+                this.sendMessage(`wheel`)
                 break
             case 'hello':
                 this.sendMessage(`Hello ${userName}! 👋`)
                 break
             case 'help':
-                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>')
+                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt> ... and maybe some egg')
                 break
             case 'ping':
                 this.sendMessage('pong! 🏓')
@@ -239,10 +265,6 @@ class RvrbBot {
     async onMessage(data) {
         try {
             const parsed = JSON.parse(data)
-
-            // Debug: Log every message type we receive
-            console.log('DEBUG - Received message type:', parsed.method)
-            console.log('DEBUG - Full message:', JSON.stringify(parsed, null, 2))
 
             switch (parsed.method) {
                 case 'ready':
@@ -262,11 +284,8 @@ class RvrbBot {
                     break
 
                 case 'pushChannelMessage':
-                    console.log('DEBUG - Chat message detected!')
                     if (parsed.params.userName !== 'RVRB') {
                         const message = parsed.params.payload.trim()
-                        console.log('DEBUG - Processing message:', message)
-
                         if (message.startsWith('+')) {
                             const command = message.slice(1).toLowerCase()
                             await this.handleCommand(command, parsed.params.userName)
@@ -276,32 +295,22 @@ class RvrbBot {
 
                 case 'playChannelTrack':
                     const track = parsed.params.track
-                    console.log(`Now playing: ${track.name} by ${track.artists[0].name}`)
                     setTimeout(() => {
                         this.sendBoofstar()
-                        // this.sendMessage(`Boofstarred: ${track.name} by ${track.artists[0].name}`)
                     }, 2000)
                     break
             }
         } catch (e) {
-            console.error('Error handling message:', e)
-            console.error('Error details:', e.stack)
+            console.error('Error:', e.message)
         }
     }
 
     run() {
         const url = `wss://app.rvrb.one/ws-bot?apiKey=${this.apiKey}`
-        console.log('Attempting to connect with:', {
-            botName: this.botName,
-            channelId: this.channelId,
-            apiKeyLength: this.apiKey?.length
-        })
-
         this.ws = new WebSocket(url)
 
         this.ws.on('open', () => {
-            console.log('WebSocket connection established')
-            // Match doopBot's join message exactly
+            console.log('Connected to RVRB')
             const joinData = {
                 jsonrpc: '2.0',
                 method: 'join',
@@ -310,10 +319,8 @@ class RvrbBot {
                 },
                 id: 1
             }
-            console.log('Sending join data:', JSON.stringify(joinData))
             this.ws.send(JSON.stringify(joinData))
 
-            // Add bot profile like doopBot does
             const botProfile = {
                 jsonrpc: '2.0',
                 method: 'editUser',
@@ -325,7 +332,6 @@ class RvrbBot {
         })
 
         this.ws.on('message', async (data) => {
-            console.log('Raw message received:', data.toString())
             try {
                 const parsed = JSON.parse(data)
                 if (parsed.method === 'keepAwake') {
@@ -341,28 +347,20 @@ class RvrbBot {
                 }
                 await this.onMessage(data)
             } catch (e) {
-                console.error('Error parsing message:', e)
+                console.error('Error:', e.message)
             }
         })
 
         this.ws.on('error', (error) => {
-            console.error('WebSocket error:', error)
+            console.error('WebSocket error:', error.message)
         })
 
         this.ws.on('close', (code, reason) => {
-            console.log('WebSocket closed:', {
-                code: code,
-                reason: reason?.toString()
-            })
-            // Try to reconnect after a delay
-            setTimeout(() => {
-                console.log('Attempting to reconnect...')
-                this.run()
-            }, 5000)
+            console.log('Disconnected, attempting to reconnect...')
+            setTimeout(() => this.run(), 5000)
         })
     }
 }
 
-// Run the bot
 const bot = new RvrbBot()
 bot.run()
