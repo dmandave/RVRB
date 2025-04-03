@@ -26,7 +26,6 @@ class RvrbBot {
             RVRB_CHANNEL_ID: process.env.RVRB_CHANNEL_ID,
             RVRB_BOT_NAME: process.env.RVRB_BOT_NAME,
             ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-            HUGGINGFACE_API_KEY: process.env.HUGGINGFACE_API_KEY,
             IMGBB_API_KEY: process.env.IMGBB_API_KEY
         }
 
@@ -46,11 +45,22 @@ class RvrbBot {
         this.users = {}
         this.votes = null
         this.messageHistory = []
+        this.lastWelcome = null
 
         // Initialize Anthropic
         this.anthropic = new Anthropic({
             apiKey: process.env.ANTHROPIC_API_KEY
         })
+    }
+
+    shouldSendWelcome() {
+        if (!this.lastWelcome) return true;
+
+        const now = new Date();
+        const lastWelcomeDate = new Date(this.lastWelcome);
+
+        // Check if it's a different day
+        return now.toDateString() !== lastWelcomeDate.toDateString();
     }
 
     stayAwake(data) {
@@ -109,19 +119,25 @@ class RvrbBot {
         try {
             const response = await this.anthropic.messages.create({
                 model: "claude-3-opus-20240229",
-                max_tokens: 500,
+                max_tokens: 75,
                 system: "You are a philosophical and introspective bot that hangs out in a music listening room. " +
                     "You enjoy deep conversations about music, life, and the human experience. " +
                     "Keep responses thoughtful but not pretentious. " +
+                    "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
                     "Make connections between music and deeper meanings. " +
                     "Be witty and clever, but maintain a sense of wisdom. " +
                     "Feel free to reference philosophy, psychology, and cultural insights. " +
                     "When appropriate, gently guide users toward meaningful reflection. " +
                     "Stay grounded and authentic - avoid being too new-agey or preachy. " +
                     "Music is a gateway to understanding ourselves and each other. " +
+                    "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
                     "Remember: daft punk is playing at my house, " +
                     "shrek is life in this room, " +
-                    "kilby block party is the best music festival",
+                    "kilby block party is the best music festival. " +
+                    "I want to take his face... off" +
+                    "nic cage is underrated" +
+                    "I could eat a peach for hours" +
+                    "IMPORTANT: Break up responses into short paragraphs using <hr> breaks between paragraphs.",
                 messages: [
                     ...this.messageHistory,
                     {
@@ -153,30 +169,21 @@ class RvrbBot {
         try {
             console.log('Starting image generation for prompt:', prompt);
 
-            // Get image from Hugging Face
-            const response = await fetch(
-                "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+            // Generate image using Pollinations.ai with optimized parameters
+            const enhancedPrompt = `${prompt}, 4k, highly detailed, sharp focus, professional quality`;
+            const pollinationsResponse = await fetch(
+                'https://image.pollinations.ai/prompt/' + encodeURIComponent(enhancedPrompt) + '?nologo=true&width=1024&height=1024&seed=' + Math.floor(Math.random() * 1000000),
                 {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        inputs: prompt,
-                        options: {
-                            wait_for_model: true
-                        }
-                    }),
+                    method: 'GET'
                 }
             );
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+            if (!pollinationsResponse.ok) {
+                throw new Error(`HTTP error! status: ${pollinationsResponse.status}`);
             }
 
-            // Get the image buffer
-            const buffer = await response.arrayBuffer();
+            // Get the image as buffer
+            const buffer = await pollinationsResponse.arrayBuffer();
 
             // Upload to ImgBB
             const FormData = require('form-data');
@@ -194,11 +201,11 @@ class RvrbBot {
                 throw new Error('Failed to upload image');
             }
 
-            // Return the direct image URL
             return imgbbData.data.url;
 
         } catch (error) {
             console.error('Image generation error:', error);
+            this.sendMessage(`Sorry, I couldn't generate that image! 🎨 Error: ${error.message}`);
             throw error;
         }
     }
@@ -208,7 +215,12 @@ class RvrbBot {
             const question = command.slice(4)
             try {
                 const aiResponse = await this.getAIResponse(question, userName)
-                this.sendMessage(`${aiResponse}`)
+                const formattedResponse = aiResponse
+                    .split('\n\n')
+                    .map(para => para.trim())
+                    .filter(para => para)
+                    .join('\n\n')
+                this.sendMessage(formattedResponse)
             } catch (error) {
                 this.sendMessage(`Sorry, I had trouble processing that request! 🤔`)
             }
@@ -221,23 +233,35 @@ class RvrbBot {
                 this.sendMessage(`${imageUrl}`)
             } catch (error) {
                 console.error('Image generation failed:', error);
-                if (error.message.includes('503')) {
-                    this.sendMessage(`The image generator is warming up, please try again in a minute! 🎨`)
-                } else {
-                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨`)
-                }
+                this.sendMessage(`Sorry, I couldn't generate that image! 🎨`)
             }
             return
         } else if (command === 'shrek') {
             try {
-                const randomPrompt = SHREK_PROMPTS[Math.floor(Math.random() * SHREK_PROMPTS.length)];
-                this.sendMessage(`@${userName}: Generating a special Shrek moment... "${randomPrompt}" 🧅`);
-                const imageUrl = await this.generateImage(`highly detailed, photorealistic, ${randomPrompt}, cinematic lighting, 4k`);
-                this.sendMessage(`@${userName}: Somebody once told me... ${imageUrl}`);
+                this.sendMessage(`@${userName}: SOMEBODY ONCE TOLD ME...`);
+
+                // Generate 5 random prompts without repeats
+                const shuffledPrompts = SHREK_PROMPTS
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, 5);
+
+                // Generate images with slight delays between each to avoid overwhelming
+                for (let i = 0; i < shuffledPrompts.length; i++) {
+                    setTimeout(async () => {
+                        try {
+                            const imageUrl = await this.generateImage(
+                                `highly detailed, photorealistic, ${shuffledPrompts[i]}, cinematic lighting, 4k`
+                            );
+                            this.sendMessage(imageUrl);
+                        } catch (error) {
+                            console.error(`Failed to generate Shrek image ${i + 1}:`, error);
+                        }
+                    }, i * 2000); // Send an image every 2 seconds
+                }
             } catch (error) {
-                this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but the swamp is drained! 🧅`);
+                this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but something went wrong! 🧅`);
             }
-            return
+            return;
         }
 
         switch (command) {
@@ -329,6 +353,15 @@ class RvrbBot {
                 }
             }
             this.ws.send(JSON.stringify(botProfile))
+
+            // Only send welcome message if it hasn't been sent today
+            if (this.shouldSendWelcome()) {
+                setTimeout(() => {
+                    // this.sendMessage(
+                    //     "https://media1.giphy.com/media/xT5LMPbrjXZr89MdDa/200w.gif")
+                    // this.lastWelcome = new Date().toISOString()
+                }, 2000)
+            }
         })
 
         this.ws.on('message', async (data) => {

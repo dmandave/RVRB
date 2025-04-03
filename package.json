@@ -1,20 +1,23 @@
 {
-  "name": "rvrb",
+  "name": "iwyme-bot",
   "version": "1.0.0",
   "description": "Listen to music with your pals, whether they're next-door or across the world - checkout https://rvrb.one/",
   "main": "ws-client.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node ws-client.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "dotenv": "^16.4.7",
-    "form-data": "^4.0.2",
+    "@anthropic-ai/sdk": "^0.18.0",
+    "dotenv": "^16.4.5",
+    "form-data": "^4.0.0",
     "node-fetch": "^2.7.0",
-    "openai": "^4.90.0",
-    "ws": "^8.18.1"
-  }
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {}
 }
