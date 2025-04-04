@@ -26,7 +26,8 @@ class RvrbBot {
             RVRB_CHANNEL_ID: process.env.RVRB_CHANNEL_ID,
             RVRB_BOT_NAME: process.env.RVRB_BOT_NAME,
             ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-            IMGBB_API_KEY: process.env.IMGBB_API_KEY
+            IMGBB_API_KEY: process.env.IMGBB_API_KEY,
+            OPENWEATHER_API_KEY: process.env.OPENWEATHER_API_KEY
         }
 
         const missingVars = Object.entries(requiredEnvVars)
@@ -115,53 +116,124 @@ class RvrbBot {
         this.ws.send(JSON.stringify(voteMessage))
     }
 
-    async getAIResponse(prompt, userName) {
+    async checkAnthropicCredits() {
         try {
+            // Instead of checking credits directly, we'll do a small test message
             const response = await this.anthropic.messages.create({
                 model: "claude-3-opus-20240229",
-                max_tokens: 75,
-                system: "You are a philosophical and introspective bot that hangs out in a music listening room. " +
-                    "You enjoy deep conversations about music, life, and the human experience. " +
-                    "Keep responses thoughtful but not pretentious. " +
-                    "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
-                    "Make connections between music and deeper meanings. " +
-                    "Be witty and clever, but maintain a sense of wisdom. " +
-                    "Feel free to reference philosophy, psychology, and cultural insights. " +
-                    "When appropriate, gently guide users toward meaningful reflection. " +
-                    "Stay grounded and authentic - avoid being too new-agey or preachy. " +
-                    "Music is a gateway to understanding ourselves and each other. " +
-                    "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
-                    "Remember: daft punk is playing at my house, " +
-                    "shrek is life in this room, " +
-                    "kilby block party is the best music festival. " +
-                    "I want to take his face... off" +
-                    "nic cage is underrated" +
-                    "I could eat a peach for hours" +
-                    "IMPORTANT: Break up responses into short paragraphs using <hr> breaks between paragraphs.",
+                max_tokens: 1,
+                system: "You are a test.",
                 messages: [
-                    ...this.messageHistory,
                     {
                         role: "user",
-                        content: `${userName}: ${prompt}`
+                        content: "test"
                     }
                 ]
-            })
+            });
 
-            const aiResponse = response.content[0].text
+            return true; // If we get here, the API is working and we have credits
+        } catch (error) {
+            console.error('Error checking Anthropic credits:', error);
+            if (error.status === 429 || error.message.includes('rate limit') || error.message.includes('insufficient credits')) {
+                console.log('No more Anthropic credits available');
+                return false;
+            }
+            // For other types of errors, we'll try Anthropic anyway
+            return true;
+        }
+    }
 
-            this.messageHistory.push(
-                { role: "user", content: `${userName}: ${prompt}` },
-                { role: "assistant", content: aiResponse }
-            )
+    async getPollinationsTextResponse(prompt) {
+        try {
+            // Use Pollinations.ai's text completion endpoint
+            const response = await fetch(
+                'https://api.pollinations.ai/v1/completion',
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        max_tokens: 150
+                    })
+                }
+            );
 
-            if (this.messageHistory.length > 10) {
-                this.messageHistory = this.messageHistory.slice(-10)
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            return aiResponse
+            const data = await response.json();
+            return data.text;
         } catch (error) {
-            console.error('AI Error:', error.message)
-            throw error
+            console.error('Pollinations text generation error:', error);
+            throw error;
+        }
+    }
+
+    async getAIResponse(prompt, userName) {
+        try {
+            // First try Anthropic
+            const hasCredits = await this.checkAnthropicCredits();
+
+            if (hasCredits) {
+                try {
+                    const response = await this.anthropic.messages.create({
+                        model: "claude-3-opus-20240229",
+                        max_tokens: 150,
+                        system: "You are a philosophical and introspective bot that hangs out in a music listening room. " +
+                            "You enjoy deep conversations about music, life, and the human experience. " +
+                            "Keep responses thoughtful but not pretentious. " +
+                            "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
+                            "Make connections between music and deeper meanings. " +
+                            "Be witty and clever, but maintain a sense of wisdom. " +
+                            "Feel free to reference philosophy, psychology, and cultural insights. " +
+                            "When appropriate, gently guide users toward meaningful reflection. " +
+                            "Stay grounded and authentic - avoid being too new-agey or preachy. " +
+                            "Music is a gateway to understanding ourselves and each other. " +
+                            "let's keep responses short and concise, don't be too verbose unless explicitly asked. " +
+                            "Remember: daft punk is playing at my house, " +
+                            "shrek is life in this room, " +
+                            "kilby block party is the best music festival. " +
+                            "I want to take his face... off" +
+                            "nic cage is underrated" +
+                            "I could eat a peach for hours" +
+                            "IMPORTANT: Break up responses into short paragraphs using <hr> breaks between paragraphs.",
+                        messages: [
+                            ...this.messageHistory,
+                            {
+                                role: "user",
+                                content: `${userName}: ${prompt}`
+                            }
+                        ]
+                    });
+
+                    const aiResponse = response.content[0].text;
+
+                    this.messageHistory.push(
+                        { role: "user", content: `${userName}: ${prompt}` },
+                        { role: "assistant", content: aiResponse }
+                    );
+
+                    if (this.messageHistory.length > 10) {
+                        this.messageHistory = this.messageHistory.slice(-10);
+                    }
+
+                    return aiResponse;
+                } catch (error) {
+                    console.error('Anthropic error:', error.message);
+                    // If Anthropic fails, fall back to Pollinations
+                    return await this.getPollinationsTextResponse(prompt);
+                }
+            } else {
+                // If no Anthropic credits, use Pollinations
+                console.log('No Anthropic credits available, using Pollinations fallback');
+                return await this.getPollinationsTextResponse(prompt);
+            }
+        } catch (error) {
+            console.error('AI Error:', error.message);
+            throw error;
         }
     }
 
@@ -206,6 +278,52 @@ class RvrbBot {
         } catch (error) {
             console.error('Image generation error:', error);
             this.sendMessage(`Sorry, I couldn't generate that image! 🎨 Error: ${error.message}`);
+            throw error;
+        }
+    }
+
+    async getWeather(location) {
+        try {
+            // Try to determine if the input is a zip code
+            const isZipCode = /^\d{5}$/.test(location);
+
+            let url;
+            if (isZipCode) {
+                url = `api.openweathermap.org/data/2.5/weather?zip=${location},us&units=imperial&appid=${process.env.OPENWEATHER_API_KEY}`;
+            } else {
+                url = `api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(location)}&units=imperial&appid=${process.env.OPENWEATHER_API_KEY}`;
+            }
+
+            const response = await fetch(`http://${url}`);
+            if (!response.ok) {
+                throw new Error('Location not found');
+            }
+
+            const data = await response.json();
+
+            // Weather condition icons
+            const weatherIcons = {
+                'Clear': '☀️',
+                'Clouds': '☁️',
+                'Rain': '🌧️',
+                'Drizzle': '🌦️',
+                'Thunderstorm': '⛈️',
+                'Snow': '❄️',
+                'Mist': '🌫️',
+                'Fog': '🌫️',
+                'Haze': '🌫️'
+            };
+
+            const icon = weatherIcons[data.weather[0].main] || '🌡️';
+
+            // Format the response
+            return `Weather for ${data.name} ${icon}\n` +
+                   `Temperature: ${Math.round(data.main.temp)}°F (feels like ${Math.round(data.main.feels_like)}°F)\n` +
+                   `Condition: ${data.weather[0].main} - ${data.weather[0].description}\n` +
+                   `Humidity: ${data.main.humidity}% 💧\n` +
+                   `Wind: ${Math.round(data.wind.speed)} mph 💨`;
+        } catch (error) {
+            console.error('Weather error:', error);
             throw error;
         }
     }
@@ -262,6 +380,19 @@ class RvrbBot {
                 this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but something went wrong! 🧅`);
             }
             return;
+        } else if (command.startsWith('weather ')) {
+            const location = command.slice(8).trim()
+            if (!location) {
+                this.sendMessage(`@${userName}: Please provide a city name, state, or ZIP code (e.g., +weather New York or +weather 10001)`)
+                return
+            }
+            try {
+                const weatherReport = await this.getWeather(location)
+                this.sendMessage(weatherReport)
+            } catch (error) {
+                this.sendMessage(`@${userName}: Sorry, I couldn't find weather information for that location! 🌡️`)
+            }
+            return
         }
 
         switch (command) {
@@ -278,7 +409,7 @@ class RvrbBot {
                 this.sendMessage(`Hello ${userName}! 👋`)
                 break
             case 'help':
-                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt> ... and maybe some egg')
+                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt>, +weather <city/zip> ... and maybe some egg')
                 break
             case 'ping':
                 this.sendMessage('pong! 🏓')
