@@ -26,8 +26,7 @@ class RvrbBot {
             RVRB_CHANNEL_ID: process.env.RVRB_CHANNEL_ID,
             RVRB_BOT_NAME: process.env.RVRB_BOT_NAME,
             ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-            IMGBB_API_KEY: process.env.IMGBB_API_KEY,
-            OPENWEATHER_API_KEY: process.env.OPENWEATHER_API_KEY
+            IMGBB_API_KEY: process.env.IMGBB_API_KEY
         }
 
         const missingVars = Object.entries(requiredEnvVars)
@@ -44,9 +43,14 @@ class RvrbBot {
         this.botId = null
         this.ws = null
         this.users = {}
-        this.votes = null
+        this.votes = {}
+        this.djs = []
         this.messageHistory = []
-        this.lastWelcome = null
+        this.songHistory = []
+        this.currentTrack = null
+        this.hasJoinedChannel = false
+        this.heartbeatInterval = null
+        this.lastHeartbeat = null
 
         // Initialize Anthropic
         this.anthropic = new Anthropic({
@@ -65,30 +69,75 @@ class RvrbBot {
     }
 
     stayAwake(data) {
-        const message = {
-            jsonrpc: '2.0',
-            method: 'stayAwake',
-            params: {
-                date: Date.now().toString()
+        try {
+            const message = {
+                jsonrpc: '2.0',
+                method: 'stayAwake',
+                params: {
+                    date: Date.now().toString()
+                }
             }
+            console.log('[WebSocket] Sending stayAwake message')
+            this.ws.send(JSON.stringify(message))
+        } catch (error) {
+            console.error('[WebSocket] Error sending stayAwake:', error)
         }
-        this.ws.send(JSON.stringify(message))
     }
 
     sendMessage(message, isCommand = false) {
-        const messageData = {
-            jsonrpc: '2.0',
-            method: 'pushMessage',
-            params: {
-                payload: message,
-                ...(isCommand && { type: 'command' })
+        try {
+            const messageData = {
+                jsonrpc: '2.0',
+                method: 'pushMessage',
+                params: {
+                    payload: message,
+                    ...(isCommand && { type: 'command' })
+                }
             }
+            console.log('[WebSocket] Sending message:', message.substring(0, 50))
+            this.ws.send(JSON.stringify(messageData))
+        } catch (error) {
+            console.error('[WebSocket] Error sending message:', error)
         }
-        this.ws.send(JSON.stringify(messageData))
+    }
+
+    updateDjs(data) {
+        if (data.params && data.params.djs) {
+            this.djs = data.params.djs
+            console.log('[WebSocket] Updated DJs list:', this.djs)
+        }
     }
 
     updateVotes(data) {
-        this.votes = data.params
+        if (data.params && data.params.voting) {
+            this.votes = data.params.voting
+            console.log('[WebSocket] Updated votes')
+        }
+    }
+
+    updateSongHistory(data) {
+        if (data.params) {
+            this.songHistory.push(data.params)
+            if (this.songHistory.length > 100) {
+                this.songHistory.shift()
+            }
+            console.log('[WebSocket] Updated song history')
+        }
+    }
+
+    handleTrackPlay(data) {
+        if (data.params && data.params.track) {
+            this.currentTrack = data.params
+            console.log('[WebSocket] Now playing:',
+                data.params.track.name,
+                'by',
+                data.params.track.artists[0].name)
+
+            // Send boofstar after track change
+            setTimeout(() => {
+                this.sendBoofstar()
+            }, 2000)
+        }
     }
 
     sendVote(vote = 0) {
@@ -296,6 +345,9 @@ class RvrbBot {
 
             const response = await fetch(`http://${url}`);
             if (!response.ok) {
+                if (response.status === 429) {
+                    throw new Error('Weather API rate limit reached. Please try again later');
+                }
                 throw new Error('Location not found');
             }
 
@@ -354,6 +406,23 @@ class RvrbBot {
                 this.sendMessage(`Sorry, I couldn't generate that image! 🎨`)
             }
             return
+        } else if (command.startsWith('weather ')) {
+            if (!process.env.OPENWEATHER_API_KEY) {
+                this.sendMessage(`@${userName}: Weather functionality is currently disabled.`)
+                return
+            }
+            const location = command.slice(8).trim()
+            if (!location) {
+                this.sendMessage(`@${userName}: Please provide a city name, state, or ZIP code (e.g., +weather New York or +weather 10001)`)
+                return
+            }
+            try {
+                const weatherReport = await this.getWeather(location)
+                this.sendMessage(weatherReport)
+            } catch (error) {
+                this.sendMessage(`@${userName}: Sorry, I couldn't find weather information for that location! 🌡️`)
+            }
+            return
         } else if (command === 'shrek') {
             try {
                 this.sendMessage(`@${userName}: SOMEBODY ONCE TOLD ME...`);
@@ -380,19 +449,6 @@ class RvrbBot {
                 this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but something went wrong! 🧅`);
             }
             return;
-        } else if (command.startsWith('weather ')) {
-            const location = command.slice(8).trim()
-            if (!location) {
-                this.sendMessage(`@${userName}: Please provide a city name, state, or ZIP code (e.g., +weather New York or +weather 10001)`)
-                return
-            }
-            try {
-                const weatherReport = await this.getWeather(location)
-                this.sendMessage(weatherReport)
-            } catch (error) {
-                this.sendMessage(`@${userName}: Sorry, I couldn't find weather information for that location! 🌡️`)
-            }
-            return
         }
 
         switch (command) {
@@ -409,7 +465,10 @@ class RvrbBot {
                 this.sendMessage(`Hello ${userName}! 👋`)
                 break
             case 'help':
-                this.sendMessage('Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt>, +weather <city/zip> ... and maybe some egg')
+                const helpMessage = 'Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt>' +
+                    (process.env.OPENWEATHER_API_KEY ? ', +weather <city/zip>' : '') +
+                    ' ... and maybe some egg'
+                this.sendMessage(helpMessage)
                 break
             case 'ping':
                 this.sendMessage('pong! 🏓')
@@ -420,26 +479,64 @@ class RvrbBot {
     async onMessage(data) {
         try {
             const parsed = JSON.parse(data)
+            console.log('[WebSocket] Processing message:', JSON.stringify(parsed).substring(0, 200))
+
+            // Handle keepAwake immediately
+            if (parsed.method === 'keepAwake') {
+                console.log('[WebSocket] Received keepAwake, sending stayAwake response')
+                this.stayAwake()
+                return
+            }
 
             switch (parsed.method) {
                 case 'ready':
-                    this.botId = parsed.params.userId || parsed.params._id
-                    console.log('Connected as bot:', this.botName)
+                    console.log('[WebSocket] Ready event received')
                     break
 
                 case 'updateChannelUsers':
-                    this.users = parsed.params.users.reduce((acc, user) => {
-                        acc[user._id] = user
-                        return acc
-                    }, {})
-                    if (!this.botId) {
-                        const botUser = Object.values(this.users).find(u => u.userName === this.botName)
-                        if (botUser) this.botId = botUser._id
+                    console.log('[WebSocket] Received channel users update')
+                    if (parsed.params && Array.isArray(parsed.params.users)) {
+                        try {
+                            const newUsers = {}
+                            for (const user of parsed.params.users) {
+                                if (user && user._id) {
+                                    newUsers[user._id] = user
+                                }
+                            }
+                            this.users = newUsers
+                            console.log('[WebSocket] Updated users list, count:', Object.keys(this.users).length)
+                            console.log('[WebSocket] Users update processed successfully')
+                        } catch (error) {
+                            console.error('[WebSocket] Error processing users update:', error)
+                        }
+                    } else {
+                        console.log('[WebSocket] Received users update with invalid format')
                     }
                     break
 
+                case 'updateChannelDjs':
+                    this.updateDjs(parsed)
+                    break
+
+                case 'updateChannelMeter':
+                    this.updateVotes(parsed)
+                    break
+
+                case 'updateChannelHistory':
+                    this.updateSongHistory(parsed)
+                    break
+
+                case 'playChannelTrack':
+                    this.handleTrackPlay(parsed)
+                    break
+
+                case 'joinSuccess':
+                    console.log('[WebSocket] Successfully joined channel')
+                    this.hasJoinedChannel = true
+                    break
+
                 case 'pushChannelMessage':
-                    if (parsed.params.userName !== 'RVRB') {
+                    if (parsed.params && parsed.params.userName !== 'RVRB') {
                         const message = parsed.params.payload.trim()
                         if (message.startsWith('+')) {
                             const command = message.slice(1).toLowerCase()
@@ -448,81 +545,150 @@ class RvrbBot {
                     }
                     break
 
-                case 'playChannelTrack':
-                    const track = parsed.params.track
-                    setTimeout(() => {
-                        this.sendBoofstar()
-                    }, 2000)
+                case 'updateUser':
+                    console.log('[WebSocket] User update received')
                     break
+
+                default:
+                    if (parsed.id && parsed.result) {
+                        console.log('[WebSocket] Received response for request:', parsed.id)
+                    } else {
+                        console.log('[WebSocket] Unhandled message type:', parsed.method)
+                    }
             }
         } catch (e) {
-            console.error('Error:', e.message)
+            console.error('[WebSocket] Error processing message:', e.message)
+            console.error('[WebSocket] Raw message data:', data.toString().substring(0, 200))
         }
+    }
+
+    setupHeartbeat() {
+        // Clear any existing heartbeat
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval)
+        }
+
+        // Set up heartbeat every 30 seconds
+        this.heartbeatInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                const now = Date.now()
+                // Only send heartbeat if we haven't received one in the last 25 seconds
+                if (!this.lastHeartbeat || (now - this.lastHeartbeat) > 25000) {
+                    console.log('[WebSocket] Sending heartbeat')
+                    this.stayAwake()
+                }
+            } else {
+                console.log('[WebSocket] Connection not open, clearing heartbeat interval')
+                clearInterval(this.heartbeatInterval)
+                this.heartbeatInterval = null
+                // Try to reconnect
+                this.reconnect()
+            }
+        }, 30000)
+    }
+
+    reconnect() {
+        console.log('[WebSocket] Attempting to reconnect...')
+        if (this.ws) {
+            this.ws.close()
+        }
+        setTimeout(() => this.run(), 5000)
     }
 
     run() {
         const url = `wss://app.rvrb.one/ws-bot?apiKey=${this.apiKey}`
-        this.ws = new WebSocket(url)
+        console.log('[WebSocket] Connecting to RVRB...')
 
-        this.ws.on('open', () => {
-            console.log('Connected to RVRB')
-            const joinData = {
-                jsonrpc: '2.0',
-                method: 'join',
-                params: {
-                    channelId: this.channelId
-                },
-                id: 1
-            }
-            this.ws.send(JSON.stringify(joinData))
+        try {
+            this.ws = new WebSocket(url, {
+                handshakeTimeout: 30000,
+                perMessageDeflate: false
+            })
 
-            const botProfile = {
-                jsonrpc: '2.0',
-                method: 'editUser',
-                params: {
-                    bio: 'I am iwyme bot! Use +help to see available commands.'
-                }
-            }
-            this.ws.send(JSON.stringify(botProfile))
+            this.ws.on('open', () => {
+                console.log('[WebSocket] Connection established')
 
-            // Only send welcome message if it hasn't been sent today
-            if (this.shouldSendWelcome()) {
-                setTimeout(() => {
-                    // this.sendMessage(
-                    //     "https://media1.giphy.com/media/xT5LMPbrjXZr89MdDa/200w.gif")
-                    // this.lastWelcome = new Date().toISOString()
-                }, 2000)
-            }
-        })
+                // Set up heartbeat mechanism
+                this.setupHeartbeat()
 
-        this.ws.on('message', async (data) => {
-            try {
-                const parsed = JSON.parse(data)
-                if (parsed.method === 'keepAwake') {
-                    const stayAwakeMessage = {
-                        jsonrpc: '2.0',
-                        method: 'stayAwake',
-                        params: {
-                            date: Date.now().toString()
-                        }
+                // Send bot profile
+                const botProfile = {
+                    jsonrpc: '2.0',
+                    method: 'editUser',
+                    params: {
+                        bio: 'I am iwyme bot! Use +help to see available commands.'
                     }
-                    this.ws.send(JSON.stringify(stayAwakeMessage))
-                    return
                 }
-                await this.onMessage(data)
-            } catch (e) {
-                console.error('Error:', e.message)
-            }
-        })
+                this.ws.send(JSON.stringify(botProfile))
+                console.log('[WebSocket] Sent bot profile')
 
-        this.ws.on('error', (error) => {
-            console.error('WebSocket error:', error.message)
-        })
+                // Send join message
+                const joinData = {
+                    jsonrpc: '2.0',
+                    method: 'join',
+                    params: {
+                        channelId: this.channelId
+                    }
+                }
+                this.ws.send(JSON.stringify(joinData))
+                console.log('[WebSocket] Sent join request')
+            })
 
-        this.ws.on('close', (code, reason) => {
-            console.log('Disconnected, attempting to reconnect...')
-            setTimeout(() => this.run(), 5000)
-        })
+            this.ws.on('message', (data) => {
+                try {
+                    const message = JSON.parse(data)
+                    console.log('[WebSocket] Raw message received:', data.toString().substring(0, 200))
+
+                    // Update lastHeartbeat time when we receive keepAwake
+                    if (message.method === 'keepAwake') {
+                        this.lastHeartbeat = Date.now()
+                        this.stayAwake()
+                        return
+                    }
+
+                    this.onMessage(data)
+                } catch (error) {
+                    console.error('[WebSocket] Error processing message:', error)
+                }
+            })
+
+            this.ws.on('error', (error) => {
+                console.error('[WebSocket] Error:', error)
+            })
+
+            this.ws.on('close', (code, reason) => {
+                console.log('[WebSocket] Connection closed:', code, reason.toString())
+                // Clear heartbeat interval
+                if (this.heartbeatInterval) {
+                    clearInterval(this.heartbeatInterval)
+                    this.heartbeatInterval = null
+                }
+
+                // Only reconnect if it wasn't a clean close
+                if (code !== 1000) {
+                    console.log('[WebSocket] Unclean close, attempting to reconnect...')
+                    setTimeout(() => this.reconnect(), 5000)
+                }
+            })
+
+            this.ws.on('ping', () => {
+                console.log('[WebSocket] Received ping')
+                try {
+                    this.ws.pong()
+                } catch (error) {
+                    console.error('[WebSocket] Error sending pong:', error)
+                }
+            })
+
+            this.ws.on('pong', () => {
+                console.log('[WebSocket] Received pong')
+                this.lastHeartbeat = Date.now()
+            })
+
+        } catch (error) {
+            console.error('[WebSocket] Setup error:', error)
+            setTimeout(() => this.reconnect(), 5000)
+        }
     }
 }
 
