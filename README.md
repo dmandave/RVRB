@@ -17,3 +17,33 @@ We're more than happy to accept contributions from anyone. Please raise a pull r
 
 ### Running locally
 To get started running RVRB locally, take a look at the [infrastructure repo](https://github.com/soundengineering/infrastructure) for guidance on getting everything setup locally.
+
+## Bot Deployment
+
+### Environment Setup
+1. Copy `env.example` to `.env`:
+   ```bash
+   cp env.example .env
+   ```
+
+2. Edit `.env` with your actual values:
+   - **RVRB Configuration**: Your RVRB API key, channel ID, and bot name
+   - **API Keys**: Various service API keys for image generation, weather, etc.
+   - **Google Cloud**: Your GCP instance name, zone, and project ID
+
+### Deploying the Bot
+Use the deploy script to upload and restart the bot:
+```bash
+./deploy-bot.sh
+```
+
+The script will:
+- Load environment variables from `.env`
+- Upload the latest `ws-client.js` to your GCP instance
+- Restart the bot using PM2
+- Show the bot status
+
+### Security Notes
+- The `.env` file is automatically ignored by git
+- Never commit your actual API keys or instance details
+- Use the `env.example` file as a template for required variables
