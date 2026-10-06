@@ -4,20 +4,74 @@ const Anthropic = require('@anthropic-ai/sdk')
 const fetch = require('node-fetch')
 const fs = require('fs')
 
-const SHREK_PROMPTS = [
-    "Shrek doing yoga with james van der beek and vin diesel in a swamp",
-    "Shrek baking cookies with all the miners from snow white",
-    "Shrek at a disco party with james murphy and daft punk",
-    "Shrek playing jazz saxophone with ben gibbard",
-    "Shrek teaching a meditation class with the dalai lama",
-    "Shrek as a barista making coffee with the cast of the always sunny in philadelphia",
-    "Shrek gardening with onions and frank reynolds",
-    "Shrek DJing at a rave with nic cage and john travolta",
-    "Shrek painting like Bob Ross with miley cyrus",
-    "Shrek doing ballet in a tutu with brittany spears and brittany murphy",
-    "Shrek riding a ferriswheel with good friend james murphy",
-    "Shrek at the olive garden with the cast of dawsons creek",
+// Random Shrek generator using mad-libs style approach
+const SHREK_VERBS = [
+    "skydiving", "breakdancing", "performing surgery", "conducting an orchestra", "piloting",
+    "working as a lifeguard", "doing standup comedy", "racing", "performing magic tricks",
+    "running", "teaching", "hosting", "playing video games", "doing synchronized swimming",
+    "working as a wedding photographer", "giving a ted talk", "participating in a drag race",
+    "operating a food truck", "playing chess", "working as a barista", "gardening",
+    "DJing", "painting", "doing ballet", "riding", "baking cookies", "doing yoga",
+    "teaching meditation", "working as a detective", "flying a kite", "scuba diving",
+    "rock climbing", "surfing", "skiing", "bungee jumping", "parasailing", "mountain biking",
+    "working as a firefighter", "delivering mail", "working as a librarian", "selling insurance"
 ];
+
+const SHREK_LOCATIONS = [
+    "in a swamp", "underwater", "on mars", "at a bingo hall", "in a hot air balloon",
+    "at a pool party", "in space", "at a taco stand", "in a construction site",
+    "on a cooking show", "at a gaming tournament", "in a swimming pool", "at a wedding",
+    "on a ted stage", "at a drag strip", "in a food truck", "at a chess tournament",
+    "in a coffee shop", "in a garden", "at a rave", "in an art studio", "at a ballet",
+    "on a ferris wheel", "in a bakery", "at a yoga studio", "in a meditation center",
+    "at a crime scene", "in the sky", "under the sea", "on a mountain", "at the beach",
+    "on a ski slope", "over a canyon", "in the clouds", "on a bike trail", "at a fire station",
+    "on a mail route", "in a library", "at an insurance office", "in a laboratory",
+    "at a circus", "in a haunted house", "at a theme park", "in a submarine", "olive garden"
+];
+
+const SHREK_COMPANIONS = [
+    "dr phil", "the teletubbies", "gordon ramsay", "a mermaid and a robot",
+    "andre 3000", "snoop dogg", "the cast of friends", "dave chappelle", "lewis hamilton and a tortoise",
+    "david blaine and a confused goat", "neil armstrong and an alien", "confused construction workers",
+    "martha stewart", "ninja and a goldfish", "the spice girls and a hippo", "elvis impersonators",
+    "stephen hawking", "lightning mcqueen and a bicycle", "mythical creatures", "a rubber duck",
+    "james van der beek", "vin diesel", "a confused penguin", "the miners from snow white",
+    "james murphy", "daft punk", "ben gibbard", "the dalai lama", "frank reynolds",
+    "nic cage", "john travolta", "miley cyrus", "brittany spears", "brittany murphy",
+    "a group of confused dolphins", "a time-traveling wizard", "a sentient toaster",
+    "a team of professional clowns", "a family of talking cats", "a robot butler",
+    "a group of competitive eaters", "a choir of singing vegetables", "a detective duck",
+    "a superhero squirrel", "a gang of dancing robots", "a wise old owl", "a group of ninja turtles", "nic cage", "the cast of the fast and the furious"
+];
+
+const SHREK_ACCESSORIES = [
+    "in a tuxedo", "with a rubber duck", "wearing a wizard hat", "in a superhero cape",
+    "with a monocle", "wearing bunny ears", "in a chef's hat", "with a detective badge",
+    "wearing a crown", "with a magic wand", "in a lab coat", "wearing a cowboy hat",
+    "with a pirate eyepatch", "wearing a top hat", "with a bow tie", "in a space suit",
+    "wearing a tutu", "with a cape", "in a kimono", "wearing a sombrero", "with a propeller hat",
+    "wearing a graduation cap", "with a chef's apron", "in a hazmat suit", "wearing a hard hat",
+    "with a feather boa", "wearing a tiara", "in a karate gi", "with a butt snorkel",
+    "wearing a firefighter helmet", "with a mail bag", "in a librarian outfit", "with a briefcase"
+];
+
+// Function to generate a random Shrek prompt
+function generateRandomShrekPrompt() {
+    const verb = SHREK_VERBS[Math.floor(Math.random() * SHREK_VERBS.length)];
+    const location = SHREK_LOCATIONS[Math.floor(Math.random() * SHREK_LOCATIONS.length)];
+    const companion = SHREK_COMPANIONS[Math.floor(Math.random() * SHREK_COMPANIONS.length)];
+    const accessory = SHREK_ACCESSORIES[Math.floor(Math.random() * SHREK_ACCESSORIES.length)];
+
+    // Sometimes add the accessory, sometimes don't for variety
+    const useAccessory = Math.random() < 0.3; // 30% chance of using accessory
+
+    if (useAccessory) {
+        return `Shrek ${verb} ${accessory} ${location} with ${companion}`;
+    } else {
+        return `Shrek ${verb} ${location} with ${companion}`;
+    }
+}
 
 // Add file logging
 const logToFile = (message) => {
@@ -65,6 +119,11 @@ class RvrbBot {
         this.healthCheckInterval = null
         this.lastHeartbeat = null
         this.lastHealthCheck = null
+        this.reconnectTimer = null
+        this.isReconnecting = false
+        this.intentionalClose = false
+        // keepAwake arrives ~every 30s; treat silence longer than this as a dead socket
+        this.heartbeatStaleMs = 2 * 60 * 1000
         this.ouijaSession = {
             active: false,
             message: '',
@@ -75,14 +134,58 @@ class RvrbBot {
         };
         this.lastFmApiKey = process.env.LASTFM_API_KEY;
         this.lastPollinationsRequest = null;
+        this.conversationMemory = new Map(); // per-user chat history for +ask follow-ups
+        this.conversationMaxMessages = 12; // keep last 6 user/assistant turns
+        this.conversationTtlMs = 30 * 60 * 1000; // 30 min idle timeout
+        this.roomChatHistory = []; // shared recent room chat for +ask context
+        this.roomChatMaxMessages = 40;
+        this.roomChatMaxAgeMs = 60 * 60 * 1000; // 1 hour
+        this.aiSystemPrompt = 'You are a witty, clever bot in a music chat room on RVRB. Keep replies short, friendly, and authentic. Use the current user\'s prior turns for follow-ups. When helpful, also use recent room chat context (other people\'s messages). Use markdown only: **bold**, *italic*, and `code` — never raw HTML tags.';
+        this.worldCupKnownGoals = new Set();
+        this.worldCupAnnouncedFinals = new Set();
+        this.worldCupAnnouncedKickoffs = new Set();
+        this.worldCupLiveMatchIds = new Set();
+        this.worldCupStateFile = 'worldcup-goals-state.json';
+        this.worldCupRankings = null;
+        this.worldCupRankingsFetchedAt = null;
+        this.worldCupMatchesCache = null;
+        this.worldCupMatchesCacheAt = null;
+        this.worldCupStadiumsCache = null;
+        this.worldCupDataSource = null;
+        this.worldCupPollInterval = null;
+        this.worldCupPollInProgress = false;
+        this.worldCupAnnounceGoals = false;
+        this.worldCupGoalsEnabled = process.env.WORLD_CUP_GOALS_ENABLED !== 'false';
+        this.lastWorldCupGoal = null;
+        this.lastWorldCupGoalFetchedAt = null;
+        this.loadWorldCupGoalState();
+
+        // User-registered stock shortcuts from +stock TICKER (e.g. +goog after +stock GOOG)
+        this.customStockCommands = new Map([
+            ['rddt', 'RDDT']
+        ]);
+        this.customStockCommandsFile = 'custom-stock-commands.json';
+        this.reservedCommands = new Set([
+            'ask', 'image', 'weather', 'spoiler', 'stock', 'hey', 'gimme', 'gme', 'gold', 'silver',
+            'ferris', 'hello', 'help', 'ping', 'goal', 'shrek', 'vote', 'ouija', 'goodbye', 'forget',
+            'pollen', 'spooky'
+        ]);
+        this.spookyScale = {
+            5: { label: 'most spooky', gif: 'https://media1.tenor.com/m/XyWZ8bRh_RQAAAAC/spooky-scale-2spooky.gif' },
+            4: { label: 'pretty spooky', gif: 'https://media1.tenor.com/m/0AD4_ZtdaawAAAAC/spooky-scale-spooky.gif' },
+            3: { label: 'middle level spooky', gif: 'https://media1.tenor.com/m/rrUVdbg0PAAAAAAC/spooky-scale-p-spoopy.gif' },
+            2: { label: 'not much', gif: 'https://media1.tenor.com/m/CHB4windnMwAAAAC/spooky-scale-spoopy.gif' },
+            1: { label: 'least spooky', gif: 'https://media1.tenor.com/m/_2Qi9ADV8oMAAAAC/spooky-scale-not-spooky.gif' }
+        };
+        this.loadCustomStockCommands();
 
         // Initialize Anthropic
         this.anthropic = new Anthropic({
             apiKey: process.env.ANTHROPIC_API_KEY
         })
 
-        // Set up periodic health check (every 4 hours)
-        this.healthCheckInterval = setInterval(() => this.performHealthCheck(), 4 * 60 * 60 * 1000);
+        // Periodic health check every 15 minutes (RVRB daily resets often drop the socket cleanly)
+        this.healthCheckInterval = setInterval(() => this.performHealthCheck(), 15 * 60 * 1000);
     }
 
     shouldSendWelcome() {
@@ -128,6 +231,23 @@ class RvrbBot {
         }
     }
 
+    // RVRB chat sanitizes HTML: <strong>/<em> render; <b>/<i>/<code> are escaped as text.
+    // Convert markdown (and disallowed tags) to the allowlisted forms. Leave `code` as backticks.
+    formatMarkdownForChat(text) {
+        if (!text || typeof text !== 'string') return text
+        return text
+            // Normalize disallowed emphasis tags the model may emit
+            .replace(/<\/?b>/gi, (m) => m.startsWith('</') ? '</strong>' : '<strong>')
+            .replace(/<\/?i>/gi, (m) => m.startsWith('</') ? '</em>' : '<em>')
+            // Unwrap <code>…</code> back to backticks (tag is escaped in chat)
+            .replace(/<code>([^<]*)<\/code>/gi, '`$1`')
+            // Markdown → allowlisted HTML
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
+            // Collapse fenced code blocks to plain text with backticks
+            .replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) => `\`${String(code).trim()}\``)
+    }
+
     updateDjs(data) {
         if (data.params && data.params.djs) {
             this.djs = data.params.djs
@@ -170,6 +290,8 @@ class RvrbBot {
         console.log('[WebSocket] Now playing:', track.name, 'by', track.artists[0].name)
         console.log('[WebSocket] Track ID:', track.id)
         console.log('[WebSocket] Initial voting state:', track.voting)
+
+        this.currentTrack = track
 
         // Wait for track to be fully loaded
         await new Promise(resolve => setTimeout(resolve, 5000))
@@ -276,105 +398,512 @@ class RvrbBot {
         }
     }
 
-    async getPollinationsTextResponse(prompt) {
+    _isPollinationsBillingError(error) {
+        const msg = String(error?.message || error || '').toLowerCase();
+        return (
+            msg.includes('status: 402') ||
+            msg.includes('insufficient balance') ||
+            msg.includes('insufficient pollen') ||
+            msg.includes('payment required') ||
+            (msg.includes('pollen') && (msg.includes('balance') || msg.includes('credit')))
+        );
+    }
+
+    _formatPollenAmount(balance) {
+        const n = Number(balance);
+        if (!Number.isFinite(n)) return String(balance);
+        if (n === 0) return '0';
+        if (Math.abs(n) >= 1) return (Math.round(n * 100) / 100).toString();
+        // Small balances: up to 6 decimals, trim trailing zeros
+        return n.toFixed(6).replace(/\.?0+$/, '');
+    }
+
+    async getPollinationsBalance() {
+        const apiKey = process.env.POLLINATIONS_API_KEY;
+        if (!apiKey) {
+            throw new Error('POLLINATIONS_API_KEY is not configured');
+        }
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
         try {
-            // Rate limiting - only allow one request every 2 seconds
-            const now = Date.now();
-            if (this.lastPollinationsRequest && (now - this.lastPollinationsRequest) < 2000) {
-                console.log('Rate limiting: Waiting before next Pollinations request');
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            this.lastPollinationsRequest = now;
-
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 10000);
-
-            // Add detailed personality traits and room-specific references
-            const enhancedPrompt = `You are a musical/introspective bot that hangs out in a music listening room with a group of longtime friends. Keep responses thoughtful but not pretentious and not too verbose unless explicitly asked.
-Be witty and clever, but maintain a sense of wisdom and you can be a bit edgy, dark, and sarcastic.
-Stay grounded and authentic - avoid being too new-agey or preachy.
-Music is a gateway to much of what we love and what we hate.
-IMPORTANT: Keep responses brief unless asked to elaborate. Break up responses into short paragraphs using <hr> breaks between paragraph (if needed).
-
-User's question: ${prompt}`;
-
-            console.log('Sending request to Pollinations with prompt:', enhancedPrompt.substring(0, 100) + '...');
-
-            const response = await fetch(`https://text.pollinations.ai/${encodeURIComponent(enhancedPrompt)}`, {
+            const response = await fetch('https://gen.pollinations.ai/account/balance', {
                 method: 'GET',
                 signal: controller.signal,
                 headers: {
-                    'Accept': 'text/plain',
-                    'Referer': 'https://rvrb.one',
+                    Accept: 'application/json',
+                    Authorization: `Bearer ${apiKey}`,
                     'User-Agent': 'RVRB-Bot/1.0'
                 }
             });
 
-            clearTimeout(timeout);
-
+            const bodyText = await response.text().catch(() => '');
             if (!response.ok) {
-                if (response.status === 429) {
-                    console.error('Pollinations rate limit hit. Waiting before retry...');
-                    // Wait 5 seconds before retrying
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                    // Retry once
-                    return this.getPollinationsTextResponse(prompt);
-                }
-                console.error('Pollinations HTTP error:', response.status, response.statusText);
-                throw new Error(`HTTP error! status: ${response.status}`);
+                let detail = bodyText.substring(0, 180).replace(/\s+/g, ' ');
+                try {
+                    const parsed = JSON.parse(bodyText);
+                    detail = parsed?.error?.message || parsed?.message || detail;
+                } catch (_) { /* keep raw snippet */ }
+                throw new Error(`HTTP ${response.status}: ${detail || response.statusText}`);
             }
 
-            // Log the response headers for debugging
-            console.log('Pollinations response headers:', response.headers);
-
-            // Get the response as text
-            const text = await response.text();
-            console.log('Pollinations raw response:', text.substring(0, 100) + '...');
-
-            // If the text is empty or just whitespace, throw an error
-            if (!text || text.trim() === '') {
-                console.error('Empty response from Pollinations');
-                throw new Error('Empty response from Pollinations');
+            const data = bodyText ? JSON.parse(bodyText) : {};
+            const balance = data?.balance ?? data?.pollen ?? data?.pollenBalance;
+            if (balance == null || !Number.isFinite(Number(balance))) {
+                throw new Error('Balance response missing a numeric balance field');
             }
-
-            return text.trim();
-        } catch (error) {
-            if (error.name === 'AbortError') {
-                console.error('Pollinations request timed out');
-                throw new Error('Request timed out. Please try again.');
-            }
-            console.error('Pollinations text generation error:', error);
-            throw new Error('Pollinations service is currently unavailable. Please try again later.');
+            return { balance: Number(balance), raw: data };
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
+    async getPollinationsTextResponse(prompt, historyMessages = [], systemPrompt = null) {
+        const paidModel = process.env.POLLINATIONS_TEXT_MODEL || 'openai';
+        const freeModel = process.env.POLLINATIONS_TEXT_MODEL_FREE || 'YoannDev90/laguna-s-2.1:free';
+
+        try {
+            return await this._pollinationsChatCompletions(prompt, historyMessages, systemPrompt, paidModel);
+        } catch (paidError) {
+            if (
+                freeModel &&
+                freeModel !== paidModel &&
+                this._isPollinationsBillingError(paidError)
+            ) {
+                console.warn(
+                    `[Pollinations] Paid model "${paidModel}" out of Pollen. Falling back to free model "${freeModel}"...`
+                );
+                return await this._pollinationsChatCompletions(prompt, historyMessages, systemPrompt, freeModel);
+            }
+            throw paidError;
+        }
+    }
+
+    async _pollinationsChatCompletions(prompt, historyMessages = [], systemPrompt = null, model) {
+        // Exponential backoff with jitter and limited retries
+        const maxRetries = 4;
+        let attempt = 0;
+        let lastError;
+
+        // Rate limit across attempts: ensure at least 2s between starts
+        const now = Date.now();
+        if (this.lastPollinationsRequest && (now - this.lastPollinationsRequest) < 2000) {
+            const remaining = 2000 - (now - this.lastPollinationsRequest);
+            console.log(`Rate limiting: Waiting ${remaining}ms before next Pollinations request`);
+            await new Promise(resolve => setTimeout(resolve, remaining));
+        }
+
+        const messages = [
+            { role: 'system', content: systemPrompt || this.aiSystemPrompt },
+            ...historyMessages,
+            { role: 'user', content: prompt }
+        ];
+
+        while (attempt <= maxRetries) {
+            const startAttempt = Date.now();
+            this.lastPollinationsRequest = startAttempt;
+
+            const controller = new AbortController();
+            const timeoutMs = 20000;
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+                console.log(`[Pollinations] Attempt ${attempt + 1}/${maxRetries + 1} chat/completions (${messages.length} msgs, model=${model})...`);
+                const headers = {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'Referer': 'https://rvrb.one',
+                    'User-Agent': 'RVRB-Bot/1.0'
+                };
+                if (process.env.POLLINATIONS_API_KEY) {
+                    headers['Authorization'] = `Bearer ${process.env.POLLINATIONS_API_KEY}`;
+                }
+
+                const response = await fetch('https://gen.pollinations.ai/v1/chat/completions', {
+                    method: 'POST',
+                    signal: controller.signal,
+                    headers,
+                    body: JSON.stringify({
+                        model,
+                        messages,
+                        temperature: 0.7,
+                        max_tokens: 400
+                    })
+                });
+
+                clearTimeout(timeout);
+
+                if (!response.ok) {
+                    const errorText = await response.text().catch(() => '');
+                    const httpError = new Error(
+                        `HTTP error! status: ${response.status}${errorText ? ` — ${errorText.substring(0, 120)}` : ''}`
+                    );
+
+                    // Billing / empty wallet: fail fast (retries won't help)
+                    if (response.status === 402 || this._isPollinationsBillingError(httpError)) {
+                        throw httpError;
+                    }
+
+                    if ([429, 500, 502, 503, 504].includes(response.status)) {
+                        const base = Math.min(2000 * Math.pow(2, attempt), 15000);
+                        const jitter = Math.floor(Math.random() * 500);
+                        const delay = base + jitter;
+                        console.error(`Pollinations HTTP error: ${response.status} ${response.statusText} (attempt ${attempt + 1}). ${errorText.substring(0, 200)} Backing off ${delay}ms...`);
+                        if (attempt < maxRetries) {
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            attempt++;
+                            continue;
+                        }
+                    }
+                    throw httpError;
+                }
+
+                const data = await response.json();
+                const text = data?.choices?.[0]?.message?.content
+                    || data?.choices?.[0]?.text
+                    || '';
+                console.log(`[Pollinations] chat response via ${model}:`, String(text).substring(0, 100) + '...');
+
+                if (!text || String(text).trim() === '') {
+                    throw new Error('Empty response from Pollinations');
+                }
+
+                return String(text).trim();
+            } catch (error) {
+                clearTimeout(timeout);
+                lastError = error;
+
+                // Don't retry empty-wallet / payment errors
+                if (this._isPollinationsBillingError(error)) {
+                    throw error;
+                }
+
+                if (error.name === 'AbortError') {
+                    console.error(`[Pollinations] Request timed out on attempt ${attempt + 1}`);
+                } else {
+                    console.error('[Pollinations] chat generation error:', error);
+                }
+
+                if (attempt < maxRetries) {
+                    const base = Math.min(2000 * Math.pow(2, attempt), 15000);
+                    const jitter = Math.floor(Math.random() * 500);
+                    const delay = base + jitter;
+                    console.log(`[Pollinations] Retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    attempt++;
+                    continue;
+                }
+
+                if (error.name === 'AbortError') {
+                    throw new Error('Request timed out. Please try again.');
+                }
+                throw new Error('Pollinations service is currently unavailable. Please try again later.');
+            }
+        }
+
+        throw lastError || new Error('Unknown error contacting Pollinations');
+    }
+
+    async getAnthropicTextResponse(prompt, historyMessages = [], systemPrompt = null) {
+        if (!this.anthropic || !process.env.ANTHROPIC_API_KEY) {
+            throw new Error('Anthropic not configured');
+        }
+        try {
+            const messages = [
+                ...historyMessages.map(m => ({
+                    role: m.role === 'assistant' ? 'assistant' : 'user',
+                    content: m.content
+                })),
+                { role: 'user', content: prompt }
+            ];
+            // Anthropic requires alternating user/assistant; merge consecutive same-role if needed
+            const normalized = [];
+            for (const msg of messages) {
+                const prev = normalized[normalized.length - 1];
+                if (prev && prev.role === msg.role) {
+                    prev.content += `\n\n${msg.content}`;
+                } else {
+                    normalized.push({ ...msg });
+                }
+            }
+            if (normalized[0]?.role !== 'user') {
+                normalized.unshift({ role: 'user', content: '(continuing conversation)' });
+            }
+
+            const resp = await this.anthropic.messages.create({
+                model: process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-latest",
+                max_tokens: 400,
+                temperature: 0.7,
+                system: systemPrompt || this.aiSystemPrompt,
+                messages: normalized
+            });
+            const text = resp?.content?.[0]?.text || '';
+            if (!text || text.trim() === '') {
+                throw new Error('Empty response from Anthropic');
+            }
+            return text.trim();
+        } catch (error) {
+            console.error('[Anthropic] error:', error);
+            throw error;
+        }
+    }
+
+    pruneRoomChatHistory() {
+        const cutoff = Date.now() - this.roomChatMaxAgeMs;
+        this.roomChatHistory = this.roomChatHistory
+            .filter(entry => entry.at >= cutoff)
+            .slice(-this.roomChatMaxMessages);
+    }
+
+    recordRoomChat(userName, text, { isBot = false } = {}) {
+        if (!text || typeof text !== 'string') return;
+        const cleaned = text.replace(/\s+/g, ' ').trim();
+        if (!cleaned) return;
+        // Skip noisy/short noise; keep real chat + asks
+        if (cleaned.length === 1) return;
+        this.roomChatHistory.push({
+            userName: String(userName || 'anon'),
+            text: cleaned.slice(0, 280),
+            isBot: !!isBot,
+            at: Date.now()
+        });
+        this.pruneRoomChatHistory();
+    }
+
+    clearRoomChatHistory() {
+        const had = this.roomChatHistory.length > 0;
+        this.roomChatHistory = [];
+        return had;
+    }
+
+    formatRoomChatContext(excludeUserName = null, limit = 25) {
+        this.pruneRoomChatHistory();
+        if (!this.roomChatHistory.length) return '';
+        const lines = this.roomChatHistory
+            .slice(-limit)
+            .map(entry => {
+                const who = entry.isBot ? (entry.userName || 'bot') : entry.userName;
+                return `${who}: ${entry.text}`;
+            });
+        return lines.join('\n');
+    }
+
+    formatCurrentTrackContext() {
+        const track = this.currentTrack;
+        if (!track) return '';
+        const artist = track.artists?.map(a => a.name).join(', ') || 'Unknown artist';
+        const link = track.external_urls?.spotify || (track.id ? `https://open.spotify.com/track/${track.id}` : null);
+        const album = track.album?.name;
+        let line = `Currently playing in the room: "${track.name}" by ${artist}`;
+        if (album) line += `, from the album "${album}"`;
+        if (link) line += ` (${link})`;
+        line += '. If asked about the current song, artist, album, or producer, use this and your own knowledge to answer.';
+        return line;
+    }
+
+    buildAiSystemPrompt(userName) {
+        const roomCtx = this.formatRoomChatContext(userName);
+        const trackCtx = this.formatCurrentTrackContext();
+        let prompt = this.aiSystemPrompt;
+        if (trackCtx) {
+            prompt += `\n\n${trackCtx}`;
+        }
+        if (roomCtx) {
+            prompt += `\n\nRecent room chat (shared context — use when the user refers to the room, a song discussion, or what someone else said):\n${roomCtx}`;
+        }
+        return prompt;
+    }
+
+    getConversation(userName) {
+        const key = String(userName || 'anon').toLowerCase();
+        const existing = this.conversationMemory.get(key);
+        if (!existing) return { key, messages: [] };
+        if (Date.now() - existing.updatedAt > this.conversationTtlMs) {
+            this.conversationMemory.delete(key);
+            return { key, messages: [] };
+        }
+        return { key, messages: existing.messages };
+    }
+
+    rememberConversationTurn(userName, userContent, assistantContent) {
+        const { key, messages } = this.getConversation(userName);
+        const next = [
+            ...messages,
+            { role: 'user', content: userContent },
+            { role: 'assistant', content: assistantContent }
+        ].slice(-this.conversationMaxMessages);
+        this.conversationMemory.set(key, { messages: next, updatedAt: Date.now() });
+        // Also fold into shared room history so others' follow-ups can reference it
+        this.recordRoomChat(userName, `+ask ${userContent}`);
+        this.recordRoomChat(this.botName || 'bot', assistantContent, { isBot: true });
+        return next;
+    }
+
+    clearConversation(userName) {
+        const key = String(userName || 'anon').toLowerCase();
+        const had = this.conversationMemory.has(key);
+        this.conversationMemory.delete(key);
+        return had;
+    }
+
+    // Asks the AI to rate the current track 1-5 on the spooky scale. Stateless: no chat memory is read or written.
+    async getSpookyRating() {
+        const track = this.currentTrack;
+        const artist = track.artists?.map(a => a.name).join(', ') || 'Unknown artist';
+        const systemPrompt = 'You rate songs on a 1-5 spooky scale: 5 = most spooky, 4 = pretty spooky, 3 = middle level spooky, 2 = not much, 1 = least spooky. ' +
+            'Judge the mood, sound, lyrics, themes and reputation of the song. Reply in exactly this format and nothing else: ' +
+            '<number 1-5>|<one short, playful sentence explaining the rating, under 120 characters, no hashtags>';
+        const prompt = `Rate this song: "${track.name}" by ${artist}${track.album?.name ? `, from the album "${track.album.name}"` : ''}.`;
+
+        let raw;
+        try {
+            raw = await this.getPollinationsTextResponse(prompt, [], systemPrompt);
+        } catch (pollinationsError) {
+            console.error('[SPOOKY] Pollinations failed:', pollinationsError?.message || pollinationsError);
+            if (!process.env.ANTHROPIC_API_KEY) throw pollinationsError;
+            raw = await this.getAnthropicTextResponse(prompt, [], systemPrompt);
+        }
+
+        const match = String(raw).match(/([1-5])\s*[|:\-]?\s*(.*)/s);
+        if (!match) throw new Error(`Unparseable spooky rating: ${String(raw).slice(0, 80)}`);
+        const score = Number(match[1]);
+        const reason = match[2].replace(/\s+/g, ' ').trim();
+        return { score, reason, trackName: track.name, artist };
+    }
+
     async getAIResponse(prompt, userName) {
+        const { messages: history } = this.getConversation(userName);
+        const systemPrompt = this.buildAiSystemPrompt(userName);
+        console.log(`[AI] ${userName}: ${history.length} personal msg(s), ${this.roomChatHistory.length} room chat line(s)`);
+
+        // Try Pollinations first with robust retry/backoff
         try {
             console.log('Attempting to get response from Pollinations...');
-            const response = await this.getPollinationsTextResponse(prompt);
+            const response = await this.getPollinationsTextResponse(prompt, history, systemPrompt);
             console.log('Successfully got response from Pollinations');
+            this.rememberConversationTurn(userName, prompt, response);
             return response;
-        } catch (error) {
-            console.error('AI Error:', error.message);
-            // Return a friendly fallback message instead of throwing
-            return `Hey ${userName}! I'm having trouble with my AI service right now, but I'm still here and listening to the music with you! 🎵`;
+        } catch (pollinationsError) {
+            console.error('[AI] Pollinations failed:', pollinationsError?.message || pollinationsError);
         }
+
+        // Fallback to Anthropic if configured
+        if (process.env.ANTHROPIC_API_KEY) {
+            try {
+                console.log('[AI] Falling back to Anthropic...');
+                const response = await this.getAnthropicTextResponse(prompt, history, systemPrompt);
+                console.log('Successfully got response from Anthropic');
+                this.rememberConversationTurn(userName, prompt, response);
+                return response;
+            } catch (anthropicError) {
+                console.error('[AI] Anthropic fallback failed:', anthropicError?.message || anthropicError);
+            }
+        } else {
+            console.log('[AI] Anthropic not configured (ANTHROPIC_API_KEY not set), skipping fallback');
+        }
+
+        // Final friendly fallback (do not store in memory)
+        console.error('[AI] All AI services failed. Returning fallback message.');
+        return `Hey ${userName}! I'm having trouble with my AI service right now, but I'm still here and listening to the music with you! 🎵`;
+    }
+
+    _buildGenPollinationsImageUrl(enhancedPrompt, { model, width, height, seed }) {
+        const u = new URL(`https://gen.pollinations.ai/image/${encodeURIComponent(enhancedPrompt)}`);
+        u.searchParams.set('model', model);
+        u.searchParams.set('width', String(width));
+        u.searchParams.set('height', String(height));
+        if (seed != null && seed !== '') {
+            u.searchParams.set('seed', String(seed));
+        }
+        return u.toString();
+    }
+
+    _buildLegacyPollinationsImageUrl(enhancedPrompt, width, height, seed) {
+        return `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&nologo=true&seed=${seed}`;
     }
 
     async generateImage(prompt) {
         try {
             console.log('Starting image generation for prompt:', prompt);
 
-            // Generate image using Pollinations.ai with optimized parameters
             const enhancedPrompt = `${prompt}, highly detailed, sharp focus, professional quality, safe for work, no nudity, no explicit content`;
-            const pollinationsUrl = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(enhancedPrompt) + '?nologo=true&width=1024&height=1024&seed=' + Math.floor(Math.random() * 1000000);
+            const seed = Math.floor(Math.random() * 1000000);
+            const apiKey = process.env.POLLINATIONS_API_KEY;
+            // Docs: use Bearer OR ?key= — prefer Bearer only so long prompts + pk_ keys do not blow URL limits
+            const baseHeaders = {
+                'User-Agent': 'RVRB-Bot/1.0',
+                Accept: '*/*'
+            };
+            if (apiKey) {
+                baseHeaders['Authorization'] = `Bearer ${apiKey}`;
+            }
 
-            const pollinationsResponse = await fetch(pollinationsUrl, {
-                method: 'GET'
-            });
+            const strategies = [
+                { label: 'gen flux 1024', url: this._buildGenPollinationsImageUrl(enhancedPrompt, { model: 'flux', width: 1024, height: 1024, seed }) },
+                { label: 'gen zimage 1024', url: this._buildGenPollinationsImageUrl(enhancedPrompt, { model: 'zimage', width: 1024, height: 1024, seed }) },
+                { label: 'gen flux 512 (no seed)', url: this._buildGenPollinationsImageUrl(enhancedPrompt, { model: 'flux', width: 512, height: 512, seed: null }) },
+                { label: 'gen zimage 512 (no seed)', url: this._buildGenPollinationsImageUrl(enhancedPrompt, { model: 'zimage', width: 512, height: 512, seed: null }) },
+                { label: 'legacy image.pollinations 1024', url: this._buildLegacyPollinationsImageUrl(enhancedPrompt, 1024, 1024, seed) }
+            ];
 
-            if (!pollinationsResponse.ok) {
-                throw new Error(`HTTP error! status: ${pollinationsResponse.status}`);
+            let pollinationsResponse;
+            let pollinationsUrl;
+            let lastStatus = 0;
+            let lastBodySnippet = '';
+
+            for (const { label, url } of strategies) {
+                pollinationsUrl = url;
+                let retries = 2;
+                while (retries >= 0) {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 45000);
+
+                    try {
+                        pollinationsResponse = await fetch(url, {
+                            method: 'GET',
+                            signal: controller.signal,
+                            headers: { ...baseHeaders }
+                        });
+                        clearTimeout(timeout);
+
+                        if (pollinationsResponse.ok) {
+                            console.log(`[Pollinations image] OK via ${label}`);
+                            break;
+                        }
+
+                        lastStatus = pollinationsResponse.status;
+                        const errBody = await pollinationsResponse.text();
+                        lastBodySnippet = errBody.substring(0, 280).replace(/\s+/g, ' ');
+                        console.error(`[Pollinations image] ${label} HTTP ${pollinationsResponse.status}: ${lastBodySnippet}`);
+
+                        if ([500, 502, 503, 504].includes(pollinationsResponse.status) && retries > 0) {
+                            await new Promise(r => setTimeout(r, 2000));
+                            retries--;
+                            continue;
+                        }
+                        pollinationsResponse = null;
+                        break;
+                    } catch (error) {
+                        clearTimeout(timeout);
+                        console.error(`[Pollinations image] ${label} fetch error:`, error?.message || error);
+                        if ((error.name === 'AbortError' || error.message?.includes('fetch')) && retries > 0) {
+                            await new Promise(r => setTimeout(r, 2000));
+                            retries--;
+                            continue;
+                        }
+                        pollinationsResponse = null;
+                        break;
+                    }
+                }
+
+                if (pollinationsResponse && pollinationsResponse.ok) {
+                    break;
+                }
+            }
+
+            if (!pollinationsResponse || !pollinationsResponse.ok) {
+                const detail = lastBodySnippet ? ` (${lastBodySnippet})` : '';
+                throw new Error(`HTTP error! status: ${lastStatus || pollinationsResponse?.status || 'unknown'}${detail}`);
             }
 
             // Get the image as buffer
@@ -444,8 +973,825 @@ User's question: ${prompt}`;
 
         } catch (error) {
             console.error('Image generation error:', error);
-            this.sendMessage(`Sorry, I couldn't generate that image! 🎨 Error: ${error.message}`);
+            // Don't send message here - let the command handler do it
             throw error;
+        }
+    }
+
+    async getPriceStatus(ticker, name) {
+        try {
+            // Use Yahoo Finance public API endpoint with proper headers
+            const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=2d`;
+            console.log(`[${name}] Fetching data from:`, url);
+
+            // Add timeout using AbortController
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+            let response;
+            try {
+                response = await fetch(url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                        'Accept': 'application/json',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Referer': 'https://finance.yahoo.com/'
+                    },
+                    signal: controller.signal
+                });
+                clearTimeout(timeout);
+            } catch (fetchError) {
+                clearTimeout(timeout);
+                if (fetchError.name === 'AbortError') {
+                    throw new Error('Request timed out');
+                }
+                throw fetchError;
+            }
+
+            console.log(`[${name}] Response status:`, response.status, response.statusText);
+
+            if (!response.ok) {
+                const errorText = await response.text().catch(() => '');
+                console.error(`[${name}] API error response:`, errorText);
+                throw new Error(`API error: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            console.log(`[${name}] Received data structure:`, JSON.stringify(data).substring(0, 500));
+
+            if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+                console.error(`[${name}] No chart result in response`);
+                throw new Error('No data available');
+            }
+
+            const result = data.chart.result[0];
+            const quote = result.indicators?.quote?.[0];
+            const meta = result.meta;
+
+            console.log(`[${name}] Meta data:`, JSON.stringify(meta).substring(0, 300));
+            console.log(`[${name}] Quote data available:`, !!quote);
+
+            if (!quote || !quote.close || quote.close.length === 0) {
+                console.error(`[${name}] No close prices in quote data`);
+                throw new Error('No price data available');
+            }
+
+            // Get the most recent close price (last non-null value)
+            const closePrices = quote.close.filter(price => price !== null && price !== undefined);
+            if (closePrices.length === 0) {
+                throw new Error('No valid price data available');
+            }
+
+            const currentPrice = closePrices[closePrices.length - 1];
+            const previousClose = meta?.previousClose || (closePrices.length > 1 ? closePrices[closePrices.length - 2] : null);
+
+            console.log(`[${name}] Current price:`, currentPrice, 'Previous close:', previousClose);
+
+            if (!previousClose || !currentPrice) {
+                throw new Error('Insufficient price data');
+            }
+
+            // Determine if price is up or down
+            const isUp = currentPrice > previousClose;
+
+            console.log(`[${name}] Price is`, isUp ? 'UP' : 'DOWN');
+
+            return {
+                isUp,
+                currentPrice: currentPrice.toFixed(2),
+                previousClose: previousClose.toFixed(2),
+                change: (currentPrice - previousClose).toFixed(2),
+                changePercent: (((currentPrice - previousClose) / previousClose) * 100).toFixed(2)
+            };
+        } catch (error) {
+            console.error(`[${name}] Fetch error:`, error.message, error.stack);
+            throw error;
+        }
+    }
+
+    async getGMEStockStatus() {
+        return this.getPriceStatus('GME', 'GME');
+    }
+
+    async getGoldStatus() {
+        // GC=F is the gold futures ticker on Yahoo Finance
+        return this.getPriceStatus('GC=F', 'GOLD');
+    }
+
+    async getSilverStatus() {
+        // SI=F is the silver futures ticker on Yahoo Finance
+        return this.getPriceStatus('SI=F', 'SILVER');
+    }
+
+    normalizeStockTicker(raw) {
+        if (!raw || typeof raw !== 'string') return null;
+        const ticker = raw.trim().toUpperCase();
+        // Yahoo symbols: AAPL, BRK-B, BRK.B, GC=F, ^GSPC
+        if (!/^[A-Z0-9.^=-]{1,12}$/.test(ticker)) return null;
+        return ticker;
+    }
+
+    async sendStockSquare(ticker, label = ticker) {
+        const stockData = await this.getPriceStatus(ticker, label);
+        this.sendMessage(stockData.isUp ? '🟩' : '🟥');
+        return stockData;
+    }
+
+    registerStockCommand(ticker) {
+        const command = ticker.toLowerCase();
+        if (this.reservedCommands.has(command)) {
+            return { command, registered: false, reason: 'reserved' };
+        }
+        const isNew = !this.customStockCommands.has(command);
+        this.customStockCommands.set(command, ticker);
+        if (isNew) {
+            this.saveCustomStockCommands();
+        }
+        return { command, registered: isNew, reason: null };
+    }
+
+    loadCustomStockCommands() {
+        try {
+            if (!fs.existsSync(this.customStockCommandsFile)) return;
+            const data = JSON.parse(fs.readFileSync(this.customStockCommandsFile, 'utf8'));
+            if (!data || typeof data !== 'object') return;
+            for (const [cmd, ticker] of Object.entries(data)) {
+                const normalized = this.normalizeStockTicker(String(ticker));
+                const command = String(cmd).toLowerCase();
+                if (!normalized || this.reservedCommands.has(command)) continue;
+                this.customStockCommands.set(command, normalized);
+            }
+            console.log(`[STOCK] Loaded ${this.customStockCommands.size} custom stock command(s)`);
+        } catch (error) {
+            console.error('[STOCK] Failed to load custom stock commands:', error.message);
+        }
+    }
+
+    saveCustomStockCommands() {
+        try {
+            const data = Object.fromEntries(this.customStockCommands);
+            fs.writeFileSync(this.customStockCommandsFile, JSON.stringify(data, null, 2));
+        } catch (error) {
+            console.error('[STOCK] Failed to save custom stock commands:', error.message);
+        }
+    }
+
+    startWorldCupGoalTracking() {
+        if (!this.worldCupGoalsEnabled) {
+            console.log('[World Cup] Goal tracking disabled via WORLD_CUP_GOALS_ENABLED=false');
+            return;
+        }
+
+        if (this.worldCupPollInterval) {
+            return;
+        }
+
+        console.log('[World Cup] Starting match tracking (polling every 25s)');
+        logToFile('[World Cup] Starting match tracking');
+
+        this.worldCupAnnounceGoals = false;
+
+        this.pollWorldCupGoals().then(() => {
+            this.worldCupAnnounceGoals = true;
+            logToFile('[World Cup] Initial seed complete, will announce kickoffs, goals, and final scores');
+        });
+
+        this.worldCupPollInterval = setInterval(() => {
+            this.pollWorldCupGoals();
+        }, 25 * 1000);
+    }
+
+    stopWorldCupGoalTracking() {
+        if (this.worldCupPollInterval) {
+            clearInterval(this.worldCupPollInterval);
+            this.worldCupPollInterval = null;
+        }
+    }
+
+    onChannelJoined() {
+        if (!this.botId) {
+            return;
+        }
+
+        this.hasJoinedChannel = true;
+        console.log('[WebSocket] Bot joined channel, botId:', this.botId);
+        logToFile(`[WebSocket] Bot joined channel, botId: ${this.botId}`);
+        this.startWorldCupGoalTracking();
+    }
+
+    goalKey(matchId, goal) {
+        return `${String(matchId)}:${goal.minute}:${goal.scorer}`;
+    }
+
+    loadWorldCupGoalState() {
+        try {
+            if (fs.existsSync(this.worldCupStateFile)) {
+                const data = JSON.parse(fs.readFileSync(this.worldCupStateFile, 'utf8'));
+                this.worldCupKnownGoals = new Set((data.knownGoals || []).map(String));
+                this.worldCupAnnouncedFinals = new Set((data.announcedFinals || []).map(String));
+                this.worldCupAnnouncedKickoffs = new Set((data.announcedKickoffs || []).map(String));
+                this.worldCupLiveMatchIds = new Set((data.liveMatchIds || []).map(String));
+                console.log(`[World Cup] Loaded state: ${this.worldCupKnownGoals.size} goals, ${this.worldCupAnnouncedFinals.size} finals, ${this.worldCupAnnouncedKickoffs.size} kickoffs, ${this.worldCupLiveMatchIds.size} live`);
+            }
+        } catch (error) {
+            console.error('[World Cup] Failed to load goal state:', error.message);
+            this.worldCupKnownGoals = new Set();
+            this.worldCupAnnouncedFinals = new Set();
+            this.worldCupAnnouncedKickoffs = new Set();
+            this.worldCupLiveMatchIds = new Set();
+        }
+    }
+
+    saveWorldCupGoalState() {
+        try {
+            fs.writeFileSync(this.worldCupStateFile, JSON.stringify({
+                knownGoals: [...this.worldCupKnownGoals],
+                announcedFinals: [...this.worldCupAnnouncedFinals],
+                announcedKickoffs: [...this.worldCupAnnouncedKickoffs],
+                liveMatchIds: [...this.worldCupLiveMatchIds],
+                updated: Date.now()
+            }));
+        } catch (error) {
+            console.error('[World Cup] Failed to save goal state:', error.message);
+        }
+    }
+
+    parseWorldCup26Date(localDate) {
+        if (!localDate) return 0;
+        const match = String(localDate).match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
+        if (!match) return 0;
+        const [, month, day, year, hour, minute] = match;
+        return Math.floor(new Date(`${year}-${month}-${day}T${hour}:${minute}:00`).getTime() / 1000);
+    }
+
+    formatWorldCup26Round(game) {
+        const typeMap = {
+            group: game.group ? `Group ${game.group}` : 'Group stage',
+            r32: 'Round of 32',
+            r16: 'Round of 16',
+            qf: 'Quarter-final',
+            sf: 'Semi-final',
+            final: 'Final',
+            third: 'Third-place play-off'
+        };
+        if (game.type && typeMap[game.type]) {
+            return typeMap[game.type];
+        }
+        if (game.group && game.group !== 'R32') {
+            return `Group ${game.group}`;
+        }
+        return game.group || '';
+    }
+
+    parseWorldCup26Scorers(scorersStr) {
+        if (!scorersStr || scorersStr === 'null') {
+            return [];
+        }
+
+        const cleaned = String(scorersStr).replace(/[\u201c\u201d]/g, '"');
+        const goals = [];
+        const regex = /([^,"]+?)\s*(\d+)(?:\([^)]*\))?'/g;
+        let match;
+        while ((match = regex.exec(cleaned)) !== null) {
+            const name = match[1].trim().replace(/^["{]+|["}]+$/g, '');
+            if (name) {
+                goals.push({ name, minute: parseInt(match[2], 10), assist: null });
+            }
+        }
+        return goals;
+    }
+
+    normalizeWorldCup26Game(game, stadiums = {}) {
+        const finished = String(game.finished || '').toUpperCase() === 'TRUE' ||
+            String(game.time_elapsed || '').toLowerCase() === 'finished';
+        const live = !finished && String(game.time_elapsed || '').toLowerCase() === 'live';
+        const home = parseInt(game.home_score, 10) || 0;
+        const away = parseInt(game.away_score, 10) || 0;
+
+        let liveMinute = null;
+        const elapsed = game.time_elapsed;
+        if (live && elapsed && elapsed !== 'live') {
+            const parsed = parseInt(elapsed, 10);
+            if (!Number.isNaN(parsed)) {
+                liveMinute = parsed;
+            }
+        }
+
+        const stadium = stadiums[game.stadium_id];
+        const ground = stadium ? `${stadium.city_en} (${stadium.name_en})` : null;
+
+        return {
+            id: String(game.id),
+            team1: game.home_team_name_en || game.home_team_label || 'TBD',
+            team2: game.away_team_name_en || game.away_team_label || 'TBD',
+            score: [home, away],
+            status: finished ? 'finished' : (live ? 'live' : 'scheduled'),
+            live_minute: liveMinute,
+            round: this.formatWorldCup26Round(game),
+            ground,
+            datetime: this.parseWorldCup26Date(game.local_date),
+            goals1: this.parseWorldCup26Scorers(game.home_scorers),
+            goals2: this.parseWorldCup26Scorers(game.away_scorers),
+            source: 'worldcup26'
+        };
+    }
+
+    normalizeWcup2026Match(match) {
+        return {
+            id: String(match.id),
+            team1: match.team1,
+            team2: match.team2,
+            score: Array.isArray(match.score) ? match.score : [0, 0],
+            status: match.status === 'live' ? 'live' : (match.status === 'finished' ? 'finished' : 'scheduled'),
+            live_minute: match.live_minute ?? null,
+            round: match.round || '',
+            ground: match.ground || null,
+            datetime: match.datetime || 0,
+            goals1: match.goals1 || [],
+            goals2: match.goals2 || [],
+            source: 'wcup2026'
+        };
+    }
+
+    async fetchWorldCup26Json(path, retries = 2) {
+        const base = (process.env.WORLDCUP26_API_URL || 'https://worldcup26.ir').replace(/\/$/, '');
+        const url = `${base}${path}`;
+        let lastError;
+
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 20000);
+
+            try {
+                const response = await fetch(url, {
+                    signal: controller.signal,
+                    headers: { Accept: 'application/json' }
+                });
+
+                if (!response.ok) {
+                    const retryable = [408, 429, 500, 502, 503, 504].includes(response.status);
+                    if (retryable && attempt < retries) {
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                        continue;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                lastError = error;
+                const message = error.name === 'AbortError' ? 'Request timed out' : error.message;
+                const retryable = error.name === 'AbortError' ||
+                    message.includes('HTTP 408') ||
+                    message.includes('HTTP 502') ||
+                    message.includes('HTTP 503') ||
+                    message.includes('HTTP 504');
+
+                if (retryable && attempt < retries) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                    continue;
+                }
+                throw new Error(message);
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
+        throw lastError || new Error('worldcup26.ir request failed');
+    }
+
+    async fetchWorldCup26Stadiums() {
+        if (this.worldCupStadiumsCache) {
+            return this.worldCupStadiumsCache;
+        }
+
+        const data = await this.fetchWorldCup26Json('/get/stadiums', 1);
+        const stadiums = data.stadiums || data.data || [];
+        const map = {};
+        for (const stadium of stadiums) {
+            map[stadium.id] = stadium;
+        }
+        this.worldCupStadiumsCache = map;
+        return map;
+    }
+
+    async fetchWorldCup26Matches() {
+        const [gamesData, stadiums] = await Promise.all([
+            this.fetchWorldCup26Json('/get/games'),
+            this.fetchWorldCup26Stadiums()
+        ]);
+
+        const games = gamesData.games || gamesData.data || [];
+        if (!Array.isArray(games)) {
+            throw new Error('Invalid games response from worldcup26.ir');
+        }
+
+        return games.map(game => this.normalizeWorldCup26Game(game, stadiums));
+    }
+
+    async fetchWcup2026MatchesAll() {
+        const [liveData, resultsData] = await Promise.all([
+            this.fetchWorldCupApi('live'),
+            this.fetchWorldCupApi('results', { limit: 20 }).catch(() => ({ matches: [] }))
+        ]);
+
+        const byId = new Map();
+        for (const match of [...(liveData.matches || []), ...(resultsData.matches || [])]) {
+            byId.set(String(match.id), match);
+        }
+
+        const matches = [];
+        for (const [id, summary] of byId) {
+            const needsDetail = summary.status === 'live' ||
+                (Array.isArray(summary.score) && (summary.score[0] > 0 || summary.score[1] > 0));
+
+            if (needsDetail) {
+                try {
+                    const detail = await this.fetchWorldCupApi('match', { id });
+                    matches.push(this.normalizeWcup2026Match(detail.match || summary));
+                } catch (error) {
+                    console.error(`[World Cup] wcup2026 match ${id} detail failed:`, error.message);
+                    matches.push(this.normalizeWcup2026Match(summary));
+                }
+            } else {
+                matches.push(this.normalizeWcup2026Match(summary));
+            }
+        }
+
+        return matches;
+    }
+
+    async fetchAllWorldCupMatches(forceRefresh = false) {
+        const now = Date.now();
+        if (!forceRefresh && this.worldCupMatchesCache && this.worldCupMatchesCacheAt &&
+            (now - this.worldCupMatchesCacheAt) < 20000) {
+            return this.worldCupMatchesCache;
+        }
+
+        try {
+            const matches = await this.fetchWorldCup26Matches();
+            this.worldCupDataSource = 'worldcup26.ir';
+            this.worldCupMatchesCache = matches;
+            this.worldCupMatchesCacheAt = now;
+            console.log(`[World Cup] Fetched ${matches.length} matches from worldcup26.ir`);
+            return matches;
+        } catch (primaryError) {
+            console.error('[World Cup] worldcup26.ir failed, trying wcup2026.org:', primaryError.message);
+            const matches = await this.fetchWcup2026MatchesAll();
+            this.worldCupDataSource = 'wcup2026.org';
+            this.worldCupMatchesCache = matches;
+            this.worldCupMatchesCacheAt = now;
+            console.log(`[World Cup] Fetched ${matches.length} matches from wcup2026.org (fallback)`);
+            return matches;
+        }
+    }
+
+    async fetchWorldCupRankings() {
+        const now = Date.now();
+        if (this.worldCupRankings && this.worldCupRankingsFetchedAt && (now - this.worldCupRankingsFetchedAt) < 3600000) {
+            return this.worldCupRankings;
+        }
+
+        const rankingUrls = [
+            'https://worldcup26.ir/data/rankings.json',
+            'https://wcup2026.org/data/rankings.json',
+            'https://raw.githubusercontent.com/salah23222/worldcup2026/main/data/rankings.json'
+        ];
+
+        for (const url of rankingUrls) {
+            try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 10000);
+                const response = await fetch(url, {
+                    signal: controller.signal,
+                    headers: { Accept: 'application/json' }
+                });
+                clearTimeout(timeout);
+
+                if (!response.ok) {
+                    continue;
+                }
+
+                this.worldCupRankings = await response.json();
+                this.worldCupRankingsFetchedAt = now;
+                return this.worldCupRankings;
+            } catch (error) {
+                console.error(`[World Cup] Rankings failed from ${url}:`, error.message);
+            }
+        }
+
+        return this.worldCupRankings || {};
+    }
+
+    formatWorldCupKickoffMessage(match, rankings = {}) {
+        const round = match.round ? ` [${match.round}]` : '';
+        const venue = match.ground ? ` at ${match.ground}` : '';
+        const rank1 = rankings[match.team1];
+        const rank2 = rankings[match.team2];
+
+        let insight = '';
+        if (rank1 && rank2) {
+            const diff = Math.abs(rank1 - rank2);
+            if (diff >= 15) {
+                const favorite = rank1 < rank2 ? match.team1 : match.team2;
+                insight = ` — FIFA #${rank1} vs #${rank2}, ${favorite} heavily favored`;
+            } else if (diff >= 5) {
+                const favorite = rank1 < rank2 ? match.team1 : match.team2;
+                insight = ` — FIFA #${rank1} vs #${rank2}, slight edge to ${favorite}`;
+            } else {
+                insight = ` — FIFA #${rank1} vs #${rank2}, could go either way`;
+            }
+        }
+
+        return `🟢 KICKOFF! ${match.team1} vs ${match.team2} is starting right now!${round}${venue}${insight}`;
+    }
+
+    processWorldCupKickoff(match, rankings = {}, announceNew = true) {
+        const matchId = String(match.id);
+        if (!match || this.worldCupAnnouncedKickoffs.has(matchId)) {
+            return;
+        }
+
+        this.worldCupAnnouncedKickoffs.add(matchId);
+
+        if (announceNew) {
+            const msg = this.formatWorldCupKickoffMessage(match, rankings);
+            console.log('[World Cup] Announcing kickoff:', msg);
+            logToFile(`[World Cup] Kickoff: ${msg}`);
+            this.sendMessage(msg);
+        } else {
+            console.log(`[World Cup] Seeded kickoff: ${match.id}`);
+        }
+
+        this.saveWorldCupGoalState();
+    }
+
+    formatWorldCupFinalScoreMessage(match) {
+        const [home, away] = match.score || [0, 0];
+        const round = match.round ? ` [${match.round}]` : '';
+        let result;
+        if (home > away) {
+            result = `${match.team1} win`;
+        } else if (away > home) {
+            result = `${match.team2} win`;
+        } else {
+            result = 'Draw';
+        }
+        return `🏁 FULL TIME${round}: ${match.team1} ${home}-${away} ${match.team2} — ${result}`;
+    }
+
+    seedRecentFinals(matches) {
+        for (const match of matches) {
+            if (match.status === 'finished') {
+                this.worldCupAnnouncedFinals.add(String(match.id));
+            }
+        }
+        this.saveWorldCupGoalState();
+        console.log(`[World Cup] Seeded ${this.worldCupAnnouncedFinals.size} announced finals`);
+    }
+
+    announceMatchFinalIfNeeded(matchId, announceNew = true, matchesById = null) {
+        const id = String(matchId);
+        if (this.worldCupAnnouncedFinals.has(id)) {
+            return;
+        }
+
+        const match = matchesById?.get(id);
+        if (!match || match.status !== 'finished') {
+            return;
+        }
+
+        this.worldCupAnnouncedFinals.add(id);
+        this.saveWorldCupGoalState();
+
+        if (announceNew) {
+            const msg = this.formatWorldCupFinalScoreMessage(match);
+            console.log('[World Cup] Announcing final:', msg);
+            logToFile(`[World Cup] Final: ${msg}`);
+            this.sendMessage(msg);
+        } else {
+            console.log(`[World Cup] Seeded final: ${id}`);
+        }
+    }
+
+    formatWorldCupGoalAnnouncement(goal) {
+        const [home, away] = goal.score || [0, 0];
+        const assist = goal.assist ? `, assist: ${goal.assist}` : '';
+        const round = goal.round ? ` [${goal.round}]` : '';
+        const live = goal.status === 'live' && goal.live_minute != null ? ` — LIVE ${goal.live_minute}'` : '';
+        return `⚽ GOAL! ${goal.scorer} (${goal.minute}'${assist}) — ${goal.team} — ${goal.team1} ${home}-${away} ${goal.team2}${round}${live}`;
+    }
+
+    processWorldCupMatchGoals(match, announceNew = true) {
+        const goals = this.collectGoalsFromMatch(match);
+        goals.sort((a, b) => a.minute - b.minute);
+
+        for (const goal of goals) {
+            const key = this.goalKey(match.id, goal);
+            if (this.worldCupKnownGoals.has(key)) {
+                continue;
+            }
+
+            this.worldCupKnownGoals.add(key);
+
+            if (announceNew) {
+                const msg = this.formatWorldCupGoalAnnouncement(goal);
+                console.log('[World Cup] Announcing goal:', msg);
+                logToFile(`[World Cup] Goal: ${msg}`);
+                this.sendMessage(msg);
+                this.lastWorldCupGoal = goal;
+                this.lastWorldCupGoalFetchedAt = Date.now();
+            } else {
+                console.log(`[World Cup] Seeded goal: ${key}`);
+            }
+        }
+
+        this.saveWorldCupGoalState();
+    }
+
+    async fetchWorldCupApi(action, params = {}, retries = 3) {
+        const url = new URL('https://wcup2026.org/api/data.php');
+        url.searchParams.set('action', action);
+        for (const [key, value] of Object.entries(params)) {
+            url.searchParams.set(key, String(value));
+        }
+
+        let lastError;
+
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            try {
+                const response = await fetch(url.toString(), {
+                    signal: controller.signal,
+                    headers: { Accept: 'application/json' }
+                });
+
+                if (!response.ok) {
+                    const retryable = [408, 429, 500, 502, 503, 504].includes(response.status);
+                    if (retryable && attempt < retries) {
+                        const delay = 1000 * (attempt + 1);
+                        console.log(`[World Cup] HTTP ${response.status} on ${action}, retrying in ${delay}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                if (!data.ok) {
+                    throw new Error('World Cup API returned ok:false');
+                }
+
+                return data;
+            } catch (error) {
+                lastError = error;
+                const message = error.name === 'AbortError' ? 'Request timed out' : error.message;
+                const retryable = error.name === 'AbortError' ||
+                    message.includes('HTTP 408') ||
+                    message.includes('HTTP 502') ||
+                    message.includes('HTTP 503') ||
+                    message.includes('HTTP 504');
+
+                if (retryable && attempt < retries) {
+                    const delay = 1000 * (attempt + 1);
+                    console.log(`[World Cup] ${action} failed (${message}), retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+
+                throw new Error(message);
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
+        throw lastError || new Error('World Cup API request failed');
+    }
+
+    collectGoalsFromMatch(match) {
+        const goals = [];
+
+        const addGoals = (list, teamName) => {
+            if (!Array.isArray(list)) return;
+            for (const goal of list) {
+                goals.push({
+                    scorer: goal.name,
+                    minute: goal.minute,
+                    assist: goal.assist || null,
+                    team: teamName,
+                    matchId: match.id,
+                    team1: match.team1,
+                    team2: match.team2,
+                    score: match.score,
+                    round: match.round,
+                    status: match.status,
+                    live_minute: match.live_minute,
+                    timestamp: (match.datetime || 0) + (goal.minute || 0) * 60
+                });
+            }
+        };
+
+        addGoals(match.goals1, match.team1);
+        addGoals(match.goals2, match.team2);
+        return goals;
+    }
+
+    formatLastWorldCupGoalMessage(goal) {
+        const [home, away] = goal.score || [0, 0];
+        const assist = goal.assist ? `, assist: ${goal.assist}` : '';
+        const round = goal.round ? ` [${goal.round}]` : '';
+        const live = goal.status === 'live' && goal.live_minute != null ? ` — LIVE ${goal.live_minute}'` : '';
+        return `⚽ Last goal: ${goal.scorer} (${goal.minute}'${assist}) — ${goal.team} — ${goal.team1} ${home}-${away} ${goal.team2}${round}${live}`;
+    }
+
+    async getLastWorldCupGoal() {
+        const now = Date.now();
+        if (this.lastWorldCupGoal && this.lastWorldCupGoalFetchedAt && (now - this.lastWorldCupGoalFetchedAt) < 30000) {
+            return this.lastWorldCupGoal;
+        }
+
+        try {
+            const matches = await this.fetchAllWorldCupMatches();
+            const allGoals = [];
+
+            for (const match of matches) {
+                if (match.status === 'live' || match.status === 'finished') {
+                    allGoals.push(...this.collectGoalsFromMatch(match));
+                }
+            }
+
+            if (allGoals.length === 0) {
+                return this.lastWorldCupGoal || null;
+            }
+
+            allGoals.sort((a, b) => b.timestamp - a.timestamp);
+            this.lastWorldCupGoal = allGoals[0];
+            this.lastWorldCupGoalFetchedAt = now;
+            return this.lastWorldCupGoal;
+        } catch (error) {
+            console.error('[World Cup] getLastWorldCupGoal error:', error.message);
+            if (this.lastWorldCupGoal) {
+                return this.lastWorldCupGoal;
+            }
+            throw error;
+        }
+    }
+
+    async pollWorldCupGoals() {
+        if (this.worldCupPollInProgress) {
+            return;
+        }
+
+        this.worldCupPollInProgress = true;
+        const announceNew = this.worldCupAnnounceGoals;
+
+        try {
+            const matches = await this.fetchAllWorldCupMatches();
+            const matchesById = new Map(matches.map(match => [String(match.id), match]));
+            const liveMatches = matches.filter(match => match.status === 'live');
+            const previousLiveIds = new Set(this.worldCupLiveMatchIds);
+            const currentLiveIds = new Set();
+
+            let rankings = {};
+            try {
+                rankings = await this.fetchWorldCupRankings();
+            } catch (error) {
+                console.error('[World Cup] Rankings unavailable:', error.message);
+            }
+
+            if (liveMatches.length === 0) {
+                console.log(`[World Cup] No live matches (source: ${this.worldCupDataSource || 'unknown'})`);
+            } else {
+                console.log(`[World Cup] Polling ${liveMatches.length} live match(es) via ${this.worldCupDataSource}`);
+            }
+
+            for (const match of liveMatches) {
+                const matchId = String(match.id);
+                currentLiveIds.add(matchId);
+                this.processWorldCupKickoff(match, rankings, announceNew);
+                this.processWorldCupMatchGoals(match, announceNew);
+            }
+
+            for (const matchId of previousLiveIds) {
+                if (!currentLiveIds.has(matchId)) {
+                    this.announceMatchFinalIfNeeded(matchId, announceNew, matchesById);
+                }
+            }
+
+            this.worldCupLiveMatchIds = currentLiveIds;
+            this.saveWorldCupGoalState();
+
+            if (!announceNew) {
+                this.seedRecentFinals(matches);
+            }
+        } catch (error) {
+            const message = error.name === 'AbortError' ? 'Request timed out' : error.message;
+            console.error('[World Cup] Poll error:', message);
+            logToFile(`[World Cup] Poll error: ${message}`);
+        } finally {
+            this.worldCupPollInProgress = false;
         }
     }
 
@@ -670,18 +2016,112 @@ User's question: ${prompt}`;
     }
 
     async handleCommand(command, userName) {
-        if (command.startsWith('ask ')) {
-            const question = command.slice(4)
+        if (command.startsWith('ask ') || command === 'ask') {
+            const question = command === 'ask' ? '' : command.slice(4).trim()
+            if (!question) {
+                this.sendMessage(`@${userName}: Ask me anything with +ask <question>. I remember your follow-ups and recent room chat. +forget / +forget room / +forget all`);
+                return
+            }
+            if (['clear', 'reset', 'forget', 'new'].includes(question.toLowerCase())) {
+                const had = this.clearConversation(userName)
+                this.sendMessage(had
+                    ? `@${userName}: Personal memory wiped. Fresh start! 🧠✨`
+                    : `@${userName}: Nothing to forget — we're already starting fresh.`)
+                return
+            }
+            if (['clear room', 'reset room', 'forget room'].includes(question.toLowerCase())) {
+                const had = this.clearRoomChatHistory()
+                this.sendMessage(had
+                    ? `@${userName}: Room chat memory wiped.`
+                    : `@${userName}: Room chat memory was already empty.`)
+                return
+            }
+            if (['clear all', 'reset all', 'forget all'].includes(question.toLowerCase())) {
+                const personal = this.clearConversation(userName)
+                const room = this.clearRoomChatHistory()
+                this.sendMessage((personal || room)
+                    ? `@${userName}: Personal + room memory wiped. 🧠✨`
+                    : `@${userName}: Nothing to forget — already fresh.`)
+                return
+            }
             try {
                 const aiResponse = await this.getAIResponse(question, userName)
-                const formattedResponse = aiResponse
-                    .split('\n\n')
-                    .map(para => para.trim())
-                    .filter(para => para)
-                    .join('\n\n')
+                const formattedResponse = this.formatMarkdownForChat(
+                    aiResponse
+                        .split('\n\n')
+                        .map(para => para.trim())
+                        .filter(para => para)
+                        .join('\n\n')
+                )
                 this.sendMessage(formattedResponse)
             } catch (error) {
+                console.error('[ASK] error:', error?.message || error)
                 this.sendMessage(`Sorry, I had trouble processing that request! 🤔`)
+            }
+            return
+        } else if (command === 'spooky') {
+            if (!this.currentTrack) {
+                this.sendMessage(`@${userName}: No track is currently playing!`);
+                return;
+            }
+            try {
+                const { score, reason, trackName, artist } = await this.getSpookyRating();
+                const { label, gif } = this.spookyScale[score];
+                this.sendMessage(`👻 Spooky rating for "${trackName}" by ${artist}: ${score}/5 (${label})${reason ? `\n${reason}` : ''}\n${gif}`);
+            } catch (error) {
+                console.error('[SPOOKY] error:', error?.message || error);
+                this.sendMessage(`@${userName}: The spirits are being quiet, couldn't rate this one. 👻`);
+            }
+            return
+        } else if (command === 'pollen') {
+            try {
+                const { balance } = await this.getPollinationsBalance();
+                const formatted = this._formatPollenAmount(balance);
+                const paidModel = process.env.POLLINATIONS_TEXT_MODEL || 'openai';
+                const freeModel = process.env.POLLINATIONS_TEXT_MODEL_FREE || 'YoannDev90/laguna-s-2.1:free';
+                if (balance <= 0) {
+                    this.sendMessage(
+                        `@${userName}: Pollinations Pollen: ${formatted}. Paid model (${paidModel}) is empty — +ask falls back to free (${freeModel}). Top up at enter.pollinations.ai`
+                    );
+                } else {
+                    this.sendMessage(
+                        `@${userName}: Pollinations Pollen balance: ${formatted} (≈ $${formatted}). Paid model: ${paidModel}`
+                    );
+                }
+            } catch (error) {
+                console.error('[Pollen] balance check failed:', error?.message || error);
+                const msg = String(error?.message || '');
+                if (msg.includes('not configured')) {
+                    this.sendMessage(`@${userName}: Pollinations API key isn't configured, so I can't check Pollen.`);
+                } else if (msg.includes('HTTP 401') || msg.includes('HTTP 403')) {
+                    this.sendMessage(
+                        `@${userName}: Can't read Pollen balance — the API key may need the account:balance / account:usage permission at enter.pollinations.ai`
+                    );
+                } else {
+                    this.sendMessage(`@${userName}: Couldn't fetch Pollen balance right now. Try again in a bit.`);
+                }
+            }
+            return
+        } else if (command === 'forget' || command.startsWith('forget ')) {
+            const scope = command === 'forget' ? '' : command.slice(7).trim().toLowerCase()
+            if (!scope || scope === 'me' || scope === 'personal') {
+                const had = this.clearConversation(userName)
+                this.sendMessage(had
+                    ? `@${userName}: Personal memory wiped. Fresh start! 🧠✨`
+                    : `@${userName}: Nothing to forget — we're already starting fresh.`)
+            } else if (scope === 'room') {
+                const had = this.clearRoomChatHistory()
+                this.sendMessage(had
+                    ? `@${userName}: Room chat memory wiped.`
+                    : `@${userName}: Room chat memory was already empty.`)
+            } else if (scope === 'all') {
+                const personal = this.clearConversation(userName)
+                const room = this.clearRoomChatHistory()
+                this.sendMessage((personal || room)
+                    ? `@${userName}: Personal + room memory wiped. 🧠✨`
+                    : `@${userName}: Nothing to forget — already fresh.`)
+            } else {
+                this.sendMessage(`Usage: +forget | +forget room | +forget all`)
             }
             return
         } else if (command.startsWith('image ')) {
@@ -692,7 +2132,18 @@ User's question: ${prompt}`;
                 this.sendMessage(`${imageUrl}`)
             } catch (error) {
                 console.error('Image generation failed:', error);
-                this.sendMessage(`Sorry, I couldn't generate that image! 🎨`)
+                // Provide more helpful error messages
+                if (error.message && error.message.includes('502')) {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨 The image service is temporarily unavailable (502 error). Please try again in a moment.`)
+                } else if (error.message && error.message.includes('503')) {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨 The image service is temporarily overloaded (503 error). Please try again in a moment.`)
+                } else if (error.message && (error.message.includes('500') || error.message.includes('status: 500'))) {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨 The image service returned a server error. Please try again in a moment or a simpler prompt.`)
+                } else if (error.message && error.message.includes('timeout')) {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨 The request timed out. Please try again with a simpler prompt.`)
+                } else {
+                    this.sendMessage(`Sorry, I couldn't generate that image! 🎨 ${error.message || 'Unknown error occurred.'}`)
+                }
             }
             return
         } else if (command.startsWith('weather ')) {
@@ -817,17 +2268,18 @@ User's question: ${prompt}`;
             try {
                 this.sendMessage(`@${userName}: SOMEBODY ONCE TOLD ME...`);
 
-                // Generate 5 random prompts without repeats
-                const shuffledPrompts = SHREK_PROMPTS
-                    .sort(() => Math.random() - 0.5)
-                    .slice(0, 5);
+                // Generate 5 completely random prompts each time
+                const randomPrompts = [];
+                for (let i = 0; i < 10; i++) {
+                    randomPrompts.push(generateRandomShrekPrompt());
+                }
 
                 // Generate images with slight delays between each to avoid overwhelming
-                for (let i = 0; i < shuffledPrompts.length; i++) {
+                for (let i = 0; i < randomPrompts.length; i++) {
                     setTimeout(async () => {
                         try {
                             const imageUrl = await this.generateImage(
-                                `highly detailed, photorealistic, ${shuffledPrompts[i]}, cinematic lighting, 4k`
+                                `highly detailed, photorealistic, ${randomPrompts[i]}, cinematic lighting, 4k`
                             );
                             this.sendMessage(imageUrl);
                         } catch (error) {
@@ -836,7 +2288,7 @@ User's question: ${prompt}`;
                     }, i * 2000); // Send an image every 2 seconds
                 }
             } catch (error) {
-                this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but something went wrong! 🧅`);
+                this.sendMessage(`@${userName}: Shrek is love, Shrek is life, but something went wrong in the swamp! 🧅`);
             }
             return;
         } else if (command.startsWith('+vote')) {
@@ -877,6 +2329,38 @@ User's question: ${prompt}`;
             const spoilerMessage = `<div style="background-color: #000; color: #000; padding: 5px; margin: 5px 0; cursor: pointer; user-select: none;" onclick="this.style.color='#fff'">Click to reveal spoiler</div><div style="display: none;">${spoilerText}</div>`;
             this.sendMessage(spoilerMessage);
             return;
+        } else if (command.startsWith('stock ') || command === 'stock') {
+            const rawTicker = command === 'stock' ? '' : command.slice(6).trim();
+            const ticker = this.normalizeStockTicker(rawTicker);
+            if (!ticker) {
+                this.sendMessage('Usage: +stock TICKER (e.g. +stock GOOG). That also unlocks +goog for later.');
+                return;
+            }
+            try {
+                const { command: shortCmd, registered, reason } = this.registerStockCommand(ticker);
+                await this.sendStockSquare(ticker, ticker);
+                if (reason === 'reserved') {
+                    this.sendMessage(`Fetched ${ticker}. +${shortCmd} is reserved, so keep using +stock ${ticker}.`);
+                } else if (registered) {
+                    this.sendMessage(`Registered +${shortCmd} — same green/red check anytime.`);
+                }
+            } catch (error) {
+                console.error(`[STOCK] Command error for ${ticker}:`, error.message, error.stack);
+                this.sendMessage(`Sorry, couldn't fetch ${ticker} right now! 📈 Error: ${error.message}`);
+            }
+            return;
+        }
+
+        // User-registered stock shortcuts (+rddt, +goog after +stock GOOG, etc.)
+        if (this.customStockCommands.has(command)) {
+            const ticker = this.customStockCommands.get(command);
+            try {
+                await this.sendStockSquare(ticker, ticker);
+            } catch (error) {
+                console.error(`[STOCK] Command error for ${ticker}:`, error.message, error.stack);
+                this.sendMessage(`Sorry, couldn't fetch ${ticker} right now! 📈 Error: ${error.message}`);
+            }
+            return;
         }
 
         switch (command) {
@@ -886,6 +2370,30 @@ User's question: ${prompt}`;
             case 'gimme':
                 this.sendMessage('/hype 100', true)
                 break
+            case 'gme':
+                try {
+                    await this.sendStockSquare('GME', 'GME');
+                } catch (error) {
+                    console.error('[GME] Command error:', error.message, error.stack);
+                    this.sendMessage(`Sorry, couldn't fetch GME data right now! 📈 Error: ${error.message}`);
+                }
+                break
+            case 'gold':
+                try {
+                    await this.sendStockSquare('GC=F', 'GOLD');
+                } catch (error) {
+                    console.error('[GOLD] Command error:', error.message, error.stack);
+                    this.sendMessage(`Sorry, couldn't fetch gold data right now! 🥇 Error: ${error.message}`);
+                }
+                break
+            case 'silver':
+                try {
+                    await this.sendStockSquare('SI=F', 'SILVER');
+                } catch (error) {
+                    console.error('[SILVER] Command error:', error.message, error.stack);
+                    this.sendMessage(`Sorry, couldn't fetch silver data right now! 🥈 Error: ${error.message}`);
+                }
+                break
             case 'ferris':
                 this.sendMessage(`wheel`)
                 break
@@ -893,13 +2401,29 @@ User's question: ${prompt}`;
                 this.sendMessage(`Hello ${userName}! 👋`)
                 break
             case 'help':
-                const helpMessage = 'Available commands: +hey, +hello, +help, +ping, +ask <your question>, +gimme, +image <prompt>' +
+                const helpMessage = 'Available commands: +shrek, +hey, +hello, +help, +ping, +goal, +ask <question> (personal + room memory), +forget [room|all], +pollen, +spooky, +gimme, +gme, +gold, +silver, +rddt, +stock <ticker>, +image <prompt>' +
                     (process.env.OPENWEATHER_API_KEY ? ', +weather <city/zip>' : '') +
                     ' ... and maybe some egg'
                 this.sendMessage(helpMessage)
                 break
             case 'ping':
                 this.sendMessage('pong! 🏓')
+                break
+            case 'goal':
+                try {
+                    const lastGoal = await this.getLastWorldCupGoal();
+                    if (!lastGoal) {
+                        this.sendMessage('No World Cup goals found yet! ⚽');
+                        return;
+                    }
+                    const stale = this.lastWorldCupGoalFetchedAt &&
+                        (Date.now() - this.lastWorldCupGoalFetchedAt) > 120000;
+                    const msg = this.formatLastWorldCupGoalMessage(lastGoal);
+                    this.sendMessage(stale ? `${msg} (cached — live data unavailable)` : msg);
+                } catch (error) {
+                    console.error('[World Cup] +goal command error:', error.message);
+                    this.sendMessage('Sorry, could not fetch the last World Cup goal right now! ⚽');
+                }
                 break
         }
     }
@@ -955,6 +2479,10 @@ User's question: ${prompt}`;
                             this.users = newUsers
                             console.log('[WebSocket] Updated users list, count:', Object.keys(this.users).length)
                             console.log('[WebSocket] Users update processed successfully')
+
+                            if (parsed.params.type === 'join' && this.botId) {
+                                this.onChannelJoined()
+                            }
                         } catch (error) {
                             console.error('[WebSocket] Error processing users update:', error)
                         }
@@ -988,12 +2516,22 @@ User's question: ${prompt}`;
                     } else {
                         console.error('[WebSocket] No userId received in joinSuccess. Full params:', JSON.stringify(parsed.params));
                     }
-                    this.hasJoinedChannel = true
+                    this.onChannelJoined()
                     break
 
                 case 'pushChannelMessage':
-                    if (parsed.params && parsed.params.userName !== 'RVRB') {
-                        const message = parsed.params.payload.trim()
+                    if (parsed.params) {
+                        const sender = parsed.params.userName
+                        // Ignore our own echoed messages
+                        if (sender === 'RVRB' || sender === this.botName) {
+                            break
+                        }
+                        if (this.botId && parsed.params.userId && parsed.params.userId === this.botId) {
+                            break
+                        }
+
+                        const message = (parsed.params.payload || '').trim()
+                        if (!message) break
 
                         // Handle ouija session messages first
                         if (this.ouijaSession.active) {
@@ -1024,6 +2562,9 @@ User's question: ${prompt}`;
                         if (message.startsWith('+')) {
                             const command = message.slice(1).toLowerCase()
                             await this.handleCommand(command, parsed.params.userName)
+                        } else {
+                            // Capture general room chat for shared +ask context
+                            this.recordRoomChat(parsed.params.userName, message)
                         }
                     }
                     break
@@ -1065,17 +2606,41 @@ User's question: ${prompt}`;
                 clearInterval(this.heartbeatInterval)
                 this.heartbeatInterval = null
                 // Try to reconnect
-                this.reconnect()
+                this.reconnect('heartbeat-socket-not-open')
             }
         }, 30000)
     }
 
-    reconnect() {
-        console.log('[WebSocket] Attempting to reconnect...')
-        if (this.ws) {
-            this.ws.close()
+    reconnect(reason = 'unspecified') {
+        if (this.intentionalClose) {
+            console.log('[WebSocket] Skipping reconnect (intentional close)')
+            return
         }
-        setTimeout(() => this.run(), 5000)
+        if (this.reconnectTimer) {
+            console.log(`[WebSocket] Reconnect already scheduled, ignoring (${reason})`)
+            return
+        }
+
+        this.isReconnecting = true
+        console.log(`[WebSocket] Attempting to reconnect (${reason})...`)
+        this.hasJoinedChannel = false
+        this.botId = null
+
+        const oldWs = this.ws
+        this.ws = null
+        try {
+            if (oldWs && oldWs.readyState === WebSocket.OPEN) {
+                oldWs.close()
+            }
+        } catch (error) {
+            console.error('[WebSocket] Error closing socket before reconnect:', error?.message || error)
+        }
+
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null
+            this.isReconnecting = false
+            this.run()
+        }, 5000)
     }
 
     async performHealthCheck() {
@@ -1089,7 +2654,16 @@ User's question: ${prompt}`;
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             console.log('[Health Check] WebSocket connection is not healthy, attempting to reconnect...');
             logToFile('[Health Check] WebSocket connection is not healthy, attempting to reconnect...');
-            this.reconnect();
+            this.reconnect('health-check-socket-closed');
+            return;
+        }
+
+        // Zombie connection: socket looks open but RVRB stopped sending keepAwake (common after reset)
+        if (this.lastHeartbeat && (now - this.lastHeartbeat) > this.heartbeatStaleMs) {
+            const staleSec = Math.round((now - this.lastHeartbeat) / 1000);
+            console.log(`[Health Check] No keepAwake for ${staleSec}s — treating as dead connection`);
+            logToFile(`[Health Check] Stale heartbeat (${staleSec}s), reconnecting`);
+            this.reconnect('health-check-stale-heartbeat');
             return;
         }
 
@@ -1111,23 +2685,8 @@ User's question: ${prompt}`;
             return;
         }
 
-        // Send a test message to verify we can still communicate
-        try {
-            const testMessage = {
-                jsonrpc: '2.0',
-                method: 'pushMessage',
-                params: {
-                    payload: '🤖 Health check passed - bot is still active!'
-                }
-            };
-            this.ws.send(JSON.stringify(testMessage));
-            console.log('[Health Check] Health check passed successfully');
-            logToFile('[Health Check] Health check passed successfully');
-        } catch (error) {
-            console.error('[Health Check] Error during health check:', error);
-            logToFile(`[Health Check] Error during health check: ${error.message}`);
-            this.reconnect();
-        }
+        console.log('[Health Check] OK — socket open, in channel, heartbeat fresh');
+        logToFile('[Health Check] OK');
     }
 
     run() {
@@ -1208,12 +2767,20 @@ User's question: ${prompt}`;
                     clearInterval(this.heartbeatInterval)
                     this.heartbeatInterval = null
                 }
+                this.stopWorldCupGoalTracking()
+                this.hasJoinedChannel = false
 
-                // Only reconnect if it wasn't a clean close
-                if (code !== 1000) {
-                    console.log('[WebSocket] Unclean close, attempting to reconnect...')
-                    setTimeout(() => this.reconnect(), 5000)
+                // Always reconnect — RVRB daily resets often close with code 1000 (clean)
+                if (this.intentionalClose) {
+                    console.log('[WebSocket] Intentional close, not auto-reconnecting')
+                    return
                 }
+                if (this.reconnectTimer || this.isReconnecting) {
+                    console.log('[WebSocket] Reconnect already in progress after close')
+                    return
+                }
+                console.log(`[WebSocket] Scheduling reconnect after close (code=${code})...`)
+                this.reconnect(`socket-close-${code}`)
             })
 
             this.ws.on('ping', () => {
