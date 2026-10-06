@@ -751,8 +751,7 @@ class RvrbBot {
         const track = this.currentTrack;
         const artist = track.artists?.map(a => a.name).join(', ') || 'Unknown artist';
         const systemPrompt = 'You rate songs on a 1-5 spooky scale: 5 = most spooky, 4 = pretty spooky, 3 = middle level spooky, 2 = not much, 1 = least spooky. ' +
-            'Judge the mood, sound, lyrics, themes and reputation of the song. Reply in exactly this format and nothing else: ' +
-            '<number 1-5>|<one short, playful sentence explaining the rating, under 120 characters, no hashtags>';
+            'Judge the mood, sound, lyrics, themes and reputation of the song. Reply with a single digit from 1 to 5 and nothing else.';
         const prompt = `Rate this song: "${track.name}" by ${artist}${track.album?.name ? `, from the album "${track.album.name}"` : ''}.`;
 
         let raw;
@@ -764,11 +763,9 @@ class RvrbBot {
             raw = await this.getAnthropicTextResponse(prompt, [], systemPrompt);
         }
 
-        const match = String(raw).match(/([1-5])\s*[|:\-]?\s*(.*)/s);
+        const match = String(raw).match(/[1-5]/);
         if (!match) throw new Error(`Unparseable spooky rating: ${String(raw).slice(0, 80)}`);
-        const score = Number(match[1]);
-        const reason = match[2].replace(/\s+/g, ' ').trim();
-        return { score, reason, trackName: track.name, artist };
+        return Number(match[0]);
     }
 
     async getAIResponse(prompt, userName) {
@@ -2065,12 +2062,9 @@ class RvrbBot {
                 return;
             }
             try {
-                const { score, reason, trackName, artist } = await this.getSpookyRating();
-                const { label, gif } = this.spookyScale[score];
-                this.sendMessage(`👻 Spooky rating for "${trackName}" by ${artist}: ${score}/5 (${label})${reason ? `\n${reason}` : ''}`);
-                // Bare URL in its own message, same as +image, so chat renders it inline
-                await new Promise(resolve => setTimeout(resolve, 400));
-                this.sendMessage(gif);
+                const score = await this.getSpookyRating();
+                // Bare URL as the whole message, same as +image, so chat renders it inline
+                this.sendMessage(this.spookyScale[score].gif);
             } catch (error) {
                 console.error('[SPOOKY] error:', error?.message || error);
                 this.sendMessage(`@${userName}: The spirits are being quiet, couldn't rate this one. 👻`);
