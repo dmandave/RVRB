@@ -171,11 +171,11 @@ class RvrbBot {
             'pollen', 'spooky'
         ]);
         this.spookyScale = {
-            5: { label: 'most spooky', gif: 'https://media1.tenor.com/m/XyWZ8bRh_RQAAAAC/spooky-scale-2spooky.gif' },
-            4: { label: 'pretty spooky', gif: 'https://media1.tenor.com/m/0AD4_ZtdaawAAAAC/spooky-scale-spooky.gif' },
-            3: { label: 'middle level spooky', gif: 'https://media1.tenor.com/m/rrUVdbg0PAAAAAAC/spooky-scale-p-spoopy.gif' },
-            2: { label: 'not much', gif: 'https://media1.tenor.com/m/CHB4windnMwAAAAC/spooky-scale-spoopy.gif' },
-            1: { label: 'least spooky', gif: 'https://media1.tenor.com/m/_2Qi9ADV8oMAAAAC/spooky-scale-not-spooky.gif' }
+            5: { label: 'most spooky', gif: 'https://i.ibb.co/B2QnPZmm/spooky-scale-5.gif' },
+            4: { label: 'pretty spooky', gif: 'https://i.ibb.co/jkc1Jv06/spooky-scale-4.gif' },
+            3: { label: 'middle level spooky', gif: 'https://i.ibb.co/xS4kgnpp/spooky-scale-3.gif' },
+            2: { label: 'not much', gif: 'https://i.ibb.co/ccf4WBqD/spooky-scale-2.gif' },
+            1: { label: 'least spooky', gif: 'https://i.ibb.co/pvmdm00r/spooky-scale-1.gif' }
         };
         this.loadCustomStockCommands();
 
