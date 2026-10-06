@@ -2067,7 +2067,10 @@ class RvrbBot {
             try {
                 const { score, reason, trackName, artist } = await this.getSpookyRating();
                 const { label, gif } = this.spookyScale[score];
-                this.sendMessage(`👻 Spooky rating for "${trackName}" by ${artist}: ${score}/5 (${label})${reason ? `\n${reason}` : ''}\n${gif}`);
+                this.sendMessage(`👻 Spooky rating for "${trackName}" by ${artist}: ${score}/5 (${label})${reason ? `\n${reason}` : ''}`);
+                // Bare URL in its own message, same as +image, so chat renders it inline
+                await new Promise(resolve => setTimeout(resolve, 400));
+                this.sendMessage(gif);
             } catch (error) {
                 console.error('[SPOOKY] error:', error?.message || error);
                 this.sendMessage(`@${userName}: The spirits are being quiet, couldn't rate this one. 👻`);
