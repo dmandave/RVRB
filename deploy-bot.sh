@@ -9,7 +9,7 @@ fi
 
 # Set default values if not provided
 INSTANCE_NAME=${GCLOUD_INSTANCE_NAME:-""}
-ZONE=${GCLOUD_ZONE:-"us-central1-f"}
+ZONE=${GCLOUD_ZONE:-"us-central1-a"}
 PROJECT_ID=${GCLOUD_PROJECT_ID:-""}
 
 # Check if required variables are set
@@ -32,9 +32,17 @@ else
     echo "ℹ️  Using current gcloud project configuration"
 fi
 
-# Upload the ws-client.js file
+# Upload the ws-client.js file (only; .env is NOT uploaded — set POLLINATIONS_API_KEY,
+# POLLINATIONS_TEXT_MODEL, POLLINATIONS_TEXT_MODEL_FREE etc. on the server in ~/rvrb-bot/.env)
 echo "📤 Uploading ws-client.js..."
 gcloud compute scp ws-client.js $INSTANCE_NAME:~/rvrb-bot/ --zone=$ZONE
+
+# Keep ensure-bot-alive.sh in sync if present locally
+if [ -f ensure-bot-alive.sh ]; then
+    echo "📤 Uploading ensure-bot-alive.sh..."
+    gcloud compute scp ensure-bot-alive.sh $INSTANCE_NAME:~/rvrb-bot/ --zone=$ZONE
+    gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --command="chmod +x ~/rvrb-bot/ensure-bot-alive.sh"
+fi
 
 # Restart the bot
 echo "🔄 Restarting bot..."

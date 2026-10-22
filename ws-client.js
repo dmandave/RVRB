@@ -168,7 +168,7 @@ class RvrbBot {
         this.reservedCommands = new Set([
             'ask', 'image', 'weather', 'spoiler', 'stock', 'hey', 'gimme', 'gme', 'gold', 'silver',
             'ferris', 'hello', 'help', 'ping', 'goal', 'shrek', 'vote', 'ouija', 'goodbye', 'forget',
-            'pollen', 'spooky'
+            'pollen', 'spooky', 'gif'
         ]);
         this.spookyScale = {
             5: { label: 'most spooky', gif: 'https://i.ibb.co/B2QnPZmm/spooky-scale-5.gif' },
@@ -766,6 +766,107 @@ class RvrbBot {
         const match = String(raw).match(/[1-5]/);
         if (!match) throw new Error(`Unparseable spooky rating: ${String(raw).slice(0, 80)}`);
         return Number(match[0]);
+    }
+
+    // Generates a short Pollinations video from a text prompt, converts it to a GIF with ffmpeg and re-hosts it on ImgBB.
+    // Throws on failure (err.code is GIF_CAP or GIF_NO_CREDITS for the two cases the caller words differently).
+    // Each request is logged to gif-usage.json so we can see how fast pollen is being spent.
+    async generateGif(prompt, userName) {
+        const apiKey = process.env.POLLINATIONS_API_KEY;
+        if (!apiKey) throw new Error('POLLINATIONS_API_KEY is not set');
+
+        const model = process.env.GIF_MODEL || 'prunaai/p-video';
+        const seconds = 3;
+        const estimatedPollen = 0.02 * seconds; // p-video is 0.02 pollen per generated second
+
+        // Daily budget (UTC day) so the pollen isn't spent in one evening. Override with GIF_DAILY_CAP.
+        const dailyCap = Number(process.env.GIF_DAILY_CAP) || 30;
+        if (this.gifsMadeToday() >= dailyCap) {
+            const err = new Error('daily GIF budget reached');
+            err.code = 'GIF_CAP';
+            throw err;
+        }
+
+        try {
+            const { balance } = await this.getPollinationsBalance();
+            if (balance < 0.25) {
+                const err = new Error(`pollen balance too low (${balance})`);
+                err.code = 'GIF_NO_CREDITS';
+                throw err;
+            }
+        } catch (error) {
+            if (error.code === 'GIF_NO_CREDITS') throw error;
+            console.error('[GIF] balance check failed, continuing:', error?.message || error);
+        }
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 120000);
+        let videoBuffer;
+        try {
+            const url = `https://gen.pollinations.ai/video/${encodeURIComponent(prompt)}?model=${encodeURIComponent(model)}&duration=${seconds}`;
+            const res = await fetch(url, { signal: controller.signal, headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'RVRB-Bot/1.0' } });
+            if (res.status === 402) {
+                const err = new Error('Pollinations reports insufficient pollen');
+                err.code = 'GIF_NO_CREDITS';
+                throw err;
+            }
+            if (!res.ok) throw new Error(`Pollinations video ${res.status}: ${(await res.text()).slice(0, 200)}`);
+            videoBuffer = Buffer.from(await res.arrayBuffer());
+        } finally {
+            clearTimeout(timeout);
+        }
+        this.recordGifUsage(userName, prompt, estimatedPollen, model);
+
+        const os = require('os');
+        const path = require('path');
+        const { execFile } = require('child_process');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gif-'));
+        const mp4Path = path.join(dir, 'in.mp4');
+        const gifPath = path.join(dir, 'out.gif');
+        let gifBuffer;
+        try {
+            fs.writeFileSync(mp4Path, videoBuffer);
+            await new Promise((resolve, reject) => {
+                execFile(process.env.FFMPEG_PATH || 'ffmpeg', [
+                    '-v', 'error', '-y', '-i', mp4Path,
+                    '-vf', 'fps=12,scale=360:-1:flags=lanczos,split[a][b];[a]palettegen[p];[b][p]paletteuse',
+                    gifPath
+                ], { timeout: 60000 }, (err, stdout, stderr) => err ? reject(new Error(`ffmpeg: ${err.message} ${stderr}`.slice(0, 300))) : resolve());
+            });
+            gifBuffer = fs.readFileSync(gifPath);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+
+        const FormData = require('form-data');
+        const form = new FormData();
+        form.append('image', gifBuffer.toString('base64'));
+        const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`, { method: 'POST', body: form });
+        const imgbbData = await imgbbRes.json();
+        if (!imgbbData.success) throw new Error(`ImgBB upload failed: ${JSON.stringify(imgbbData).slice(0, 200)}`);
+        return imgbbData.data.url;
+    }
+
+    gifsMadeToday() {
+        try {
+            const usage = JSON.parse(fs.readFileSync('gif-usage.json', 'utf8'));
+            const today = new Date().toISOString().slice(0, 10);
+            return usage.log.filter(e => e.provider && e.at.startsWith(today)).length;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    recordGifUsage(userName, prompt, pollen, provider) {
+        const file = 'gif-usage.json';
+        let usage = { log: [] };
+        try { usage = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* first run */ }
+        usage.log.push({ at: new Date().toISOString(), user: userName, prompt, pollen, provider });
+        const mine = usage.log.filter(e => e.provider);
+        usage.pollinationsGenerations = mine.length;
+        usage.pollinationsPollen = Number(mine.reduce((sum, e) => sum + (e.pollen || 0), 0).toFixed(4));
+        fs.writeFileSync(file, JSON.stringify(usage, null, 2));
+        console.log(`[GIF] ${userName}: "${prompt}" (~${pollen} pollen). Total: ${usage.pollinationsGenerations} GIFs, ~${usage.pollinationsPollen} pollen`);
     }
 
     async getAIResponse(prompt, userName) {
@@ -2121,6 +2222,31 @@ class RvrbBot {
                 this.sendMessage(`Usage: +forget | +forget room | +forget all`)
             }
             return
+        } else if (command.startsWith('gif ')) {
+            const prompt = command.slice(4).trim().slice(0, 500)
+            if (!prompt) return
+            if (this.gifInFlight) {
+                this.sendMessage(`@${userName}: One GIF at a time, still cooking the last one! 🎞️`)
+                return
+            }
+            this.gifInFlight = true
+            try {
+                const gifUrl = await this.generateGif(prompt, userName)
+                // Bare URL as the whole message so chat renders it inline
+                this.sendMessage(gifUrl)
+            } catch (error) {
+                console.error('[GIF] error:', error?.code || '', error?.message || error)
+                if (error?.code === 'GIF_CAP') {
+                    this.sendMessage(`@${userName}: Out of GIF budget for today, try again tomorrow! 🎞️`)
+                } else if (error?.code === 'GIF_NO_CREDITS') {
+                    this.sendMessage(`@${userName}: The bot is out of pollen for GIFs right now. 🎞️`)
+                } else {
+                    this.sendMessage(`@${userName}: Couldn't make that GIF, try again in a bit. 🎞️`)
+                }
+            } finally {
+                this.gifInFlight = false
+            }
+            return
         } else if (command.startsWith('image ')) {
             const prompt = command.slice(6)
             console.log('Received image command from', userName, 'with prompt:', prompt);
@@ -2398,7 +2524,7 @@ class RvrbBot {
                 this.sendMessage(`Hello ${userName}! 👋`)
                 break
             case 'help':
-                const helpMessage = 'Available commands: +shrek, +hey, +hello, +help, +ping, +goal, +ask <question> (personal + room memory), +forget [room|all], +pollen, +spooky, +gimme, +gme, +gold, +silver, +rddt, +stock <ticker>, +image <prompt>' +
+                const helpMessage = 'Available commands: +shrek, +hey, +hello, +help, +ping, +goal, +ask <question> (personal + room memory), +forget [room|all], +pollen, +spooky, +gimme, +gme, +gold, +silver, +rddt, +stock <ticker>, +image <prompt>, +gif <prompt>' +
                     (process.env.OPENWEATHER_API_KEY ? ', +weather <city/zip>' : '') +
                     ' ... and maybe some egg'
                 this.sendMessage(helpMessage)
